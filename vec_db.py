@@ -1,8 +1,9 @@
 from typing import Dict, List, Annotated
 import numpy as np
 import os
-
-from IVF import IVFIndex
+# import importlib, IVF
+# importlib.reload(IVF)
+from IVF import IVFIndex  # import your class
 
 
 DB_SEED_NUMBER = 42
@@ -10,7 +11,7 @@ ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
 
 class VecDB:
-    def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
+    def __init__(self, database_file_path = "saved_db.dat", index_file_path = "ivf_index", new_db = True, db_size = None) -> None:
         self.db_path = database_file_path
         self.index_path = index_file_path
 
@@ -71,9 +72,8 @@ class VecDB:
         # Automatically load the index if not loaded
         if self.ivf_index is None:
             print("IVF index not loaded. Loading from file...")
-            self.ivf_index = IVFIndex(n_clusters=0)  # placeholder, will be set by load
-            self.ivf_index.file_name = self.index_path
-            self.ivf_index.load(self.index_path)  # this will set cluster_centers and inverted_index
+            self.ivf_index = IVFIndex()
+            self.ivf_index.load(self.index_path, mmap=True)  # use 'mmap' instead of mmap_ids
 
         if not self.ivf_index.fitted:
             raise ValueError("IVF index not built or loaded correctly.")
@@ -87,7 +87,6 @@ class VecDB:
             get_row=self.get_one_row  
         )
         return top_indices
-
 
     
     def _cal_score(self, vec1, vec2):
@@ -108,24 +107,3 @@ class VecDB:
         self.ivf_index.save(self.index_path)
         print("IVF index built and saved.")
 
-
-
-
-# import numpy as np
-
-# def main():
-#     DB_SIZE = 1_000_000  # 1 million vectors
-
-#     # Step 1: Initialize VecDB and generate random data
-#     print("Initializing database with 1M random vectors...")
-#     db = VecDB(database_file_path="saved_db.dat",
-#                 index_file_path="ivf_index.pkl",
-#                 new_db=False ,
-#                 db_size=DB_SIZE)
-    
-#     # Step 2: Build IVF index
-#     print("Building IVF index...")
-#     db._build_index()  # will fit KMeans and save the index
-
-# if __name__ == "__main__":
-#     main()
