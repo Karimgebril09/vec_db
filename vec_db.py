@@ -2,6 +2,8 @@ from typing import Dict, List, Annotated
 import numpy as np
 import os
 
+from IVF import IVFIndex
+
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
