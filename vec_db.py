@@ -73,7 +73,7 @@ class VecDB:
             print("IVF index not loaded. Loading from file...")
             self.ivf_index = IVFIndex(n_clusters=0)  # placeholder, will be set by load
             self.ivf_index.file_name = self.index_path
-            self.ivf_index.load()  # this will set cluster_centers and inverted_index
+            self.ivf_index.load(self.index_path)  # this will set cluster_centers and inverted_index
 
         if not self.ivf_index.fitted:
             raise ValueError("IVF index not built or loaded correctly.")
