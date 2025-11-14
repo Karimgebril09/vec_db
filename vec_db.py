@@ -1,10 +1,16 @@
 from typing import Dict, List, Annotated
 import numpy as np
 import os
+# my imports
+import heapq
+from LSH import SEED, Build_LSH_index, retreive_LSH
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
+
+# my consts
+NUM_PLANES = 5
 
 class VecDB:
     def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
@@ -58,15 +64,22 @@ class VecDB:
         return np.array(vectors)
     
     def retrieve(self, query: Annotated[np.ndarray, (1, DIMENSION)], top_k = 5):
-        scores = []
-        num_records = self._get_num_records()
+        heap = []
+        np.random.seed(SEED)
+        plane_norms = np.memmap(os.path.join(self.index_path, "plane_norms.dat"), dtype=np.float32, mode='r', shape=(NUM_PLANES, DIMENSION))
+        rows_num=retreive_LSH(plane_norms, query, self.index_path)
+
         # here we assume that the row number is the ID of each vector
-        for row_num in range(num_records):
+        for row_num in rows_num:
             vector = self.get_one_row(row_num)
             score = self._cal_score(query, vector)
-            scores.append((score, row_num))
+            
+            if len(heap) < top_k:
+                heapq.heappush(heap, (score, row_num))
+            elif score > heap[0][0] or (score == heap[0][0] and row_num < heap[0][1]):
+                heapq.heapreplace(heap, (score, row_num))
         # here we assume that if two rows have the same score, return the lowest ID
-        scores = sorted(scores, reverse=True)[:top_k]
+        scores = sorted(heap, reverse=True)
         return [s[1] for s in scores]
     
     def _cal_score(self, vec1, vec2):
@@ -78,6 +91,5 @@ class VecDB:
 
     def _build_index(self):
         # Placeholder for index building logic
-        pass
-
-
+        all_vectors=self.get_all_rows()
+        Build_LSH_index(self.index_path, all_vectors, num_planes=NUM_PLANES)
