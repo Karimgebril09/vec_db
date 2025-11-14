@@ -38,4 +38,6 @@ similar_images = db.retrieve(query_vector, top_k=5)
 print(similar_images)
 ```
 
-Feel free to customize the code to suit your specific use case.
+Feel free to customize the code to suit your specific use case......
+
+
