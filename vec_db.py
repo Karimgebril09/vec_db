@@ -2,6 +2,7 @@ from typing import Dict, List, Annotated
 import numpy as np
 import os
 
+
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
@@ -10,6 +11,13 @@ class VecDB:
     def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
         self.db_path = database_file_path
         self.index_path = index_file_path
+
+
+        self.n_clusters = 100  # default number of clusters
+        self.n_probe = 5       # default number of clusters to probe
+
+
+        self.ivf_index = None  # IVFIndex instance
         if new_db:
             if db_size is None:
                 raise ValueError("You need to provide the size of the database")
@@ -57,17 +65,28 @@ class VecDB:
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
     
-    def retrieve(self, query: Annotated[np.ndarray, (1, DIMENSION)], top_k = 5):
-        scores = []
-        num_records = self._get_num_records()
-        # here we assume that the row number is the ID of each vector
-        for row_num in range(num_records):
-            vector = self.get_one_row(row_num)
-            score = self._cal_score(query, vector)
-            scores.append((score, row_num))
-        # here we assume that if two rows have the same score, return the lowest ID
-        scores = sorted(scores, reverse=True)[:top_k]
-        return [s[1] for s in scores]
+    def retrieve(self, query: np.ndarray, top_k=5):
+        # Automatically load the index if not loaded
+        if self.ivf_index is None:
+            print("IVF index not loaded. Loading from file...")
+            self.ivf_index = IVFIndex(n_clusters=0)  # placeholder, will be set by load
+            self.ivf_index.file_name = self.index_path
+            self.ivf_index.load()  # this will set cluster_centers and inverted_index
+
+        if not self.ivf_index.fitted:
+            raise ValueError("IVF index not built or loaded correctly.")
+
+        # Use the IVFIndex retrieve function with get_row for memory efficiency
+        top_indices = self.ivf_index.retrieve(
+            query_vector=query,
+            n_clusters=self.n_probe,
+            n_arrays=top_k,
+            cosine_similarity=self._cal_score,
+            get_row=self.get_one_row  
+        )
+        return top_indices
+
+
     
     def _cal_score(self, vec1, vec2):
         dot_product = np.dot(vec1, vec2)
@@ -77,7 +96,34 @@ class VecDB:
         return cosine_similarity
 
     def _build_index(self):
-        # Placeholder for index building logic
-        pass
+
+        # Load all vectors once to fit KMeans
+        vectors = self.get_all_rows()
+        self.ivf_index = IVFIndex(n_clusters=self.n_clusters)
+        self.ivf_index.fit(vectors)
+        
+        # Save the index to disk
+        self.ivf_index.save(self.index_path)
+        print("IVF index built and saved.")
 
 
+
+
+# import numpy as np
+
+# def main():
+#     DB_SIZE = 1_000_000  # 1 million vectors
+
+#     # Step 1: Initialize VecDB and generate random data
+#     print("Initializing database with 1M random vectors...")
+#     db = VecDB(database_file_path="saved_db.dat",
+#                 index_file_path="ivf_index.pkl",
+#                 new_db=False ,
+#                 db_size=DB_SIZE)
+    
+#     # Step 2: Build IVF index
+#     print("Building IVF index...")
+#     db._build_index()  # will fit KMeans and save the index
+
+# if __name__ == "__main__":
+#     main()
