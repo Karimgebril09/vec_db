@@ -32,7 +32,7 @@ class VecDB:
     def _get_num_records(self) -> int:
         return os.path.getsize(self.db_path) // (DIMENSION * ELEMENT_SIZE)
 
-    def insert_records(self, rows: Annotated[np.ndarray, (int, 70)]):
+    def insert_records(self, rows: Annotated[np.ndarray, (int, 64)]):
         num_old_records = self._get_num_records()
         num_new_records = len(rows)
         full_shape = (num_old_records + num_new_records, DIMENSION)
