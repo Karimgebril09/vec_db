@@ -1,7 +1,7 @@
 import numpy as np
 import os
 DIMENSION=64
-SEED=42
+SEED=3
 
 def compute_hash(vector: np.ndarray, plane_norms: np.ndarray) -> str:
     dot_products = np.dot(vector, plane_norms.T)
@@ -44,8 +44,8 @@ def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: 
     indices = []
     try:
         bucket_file = os.path.join(index_path, f"{hash_str}.npy")
-        print(bucket_file)
         indices=np.load(bucket_file)
     except:
-        print("Bucket not found")
+        pass
+        # print("Bucket not found")
     return indices
