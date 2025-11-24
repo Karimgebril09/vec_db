@@ -25,7 +25,7 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
     plane_norms = orthogonal_planes(num_planes, DIMENSION) 
     hash_buckets = {}   
     Projections=np.dot(dataset_vectors, plane_norms.T)
-    hash_bits = (Projections > 0).astype(np.int32)
+    hash_bits = (Projections > 0).astype(int)
     
     for i in range(len(dataset_vectors)):
         hash_int = int("".join(map(str, hash_bits[i])), 2)
@@ -57,7 +57,7 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
 
 def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: str):
     dot_products = np.dot(query_vector, Plane_norms.T)
-    hash_bits = (dot_products > 0).astype(np.int32)[0]
+    hash_bits = (dot_products > 0).astype(int)[0]
     hash_int = int("".join(map(str, hash_bits)), 2)
 
     indices = []
