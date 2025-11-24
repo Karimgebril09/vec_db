@@ -28,11 +28,11 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
     hash_bits = (Projections > 0).astype(int)
     
     for i in range(len(dataset_vectors)):
-        hash_int = int("".join(map(str, hash_bits[i])), 2)
+        hash_str = "".join(map(str, hash_bits[i]))
         
-        if hash_int not in hash_buckets:
-            hash_buckets[hash_int] = []
-        hash_buckets[hash_int].append(i)
+        if hash_str not in hash_buckets:
+            hash_buckets[hash_str] = []
+        hash_buckets[hash_str].append(i)
 
     if not os.path.exists(index_path):
         os.makedirs(index_path)
@@ -58,10 +58,10 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
 def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: str):
     dot_products = np.dot(query_vector, Plane_norms.T)
     hash_bits = (dot_products > 0).astype(int)[0]
-    hash_int = int("".join(map(str, hash_bits)), 2)
+    hash_str = "".join(map(str, hash_bits))
 
     indices = []
-    bucket_file = os.path.join(index_path, f"{hash_int}.dat")
+    bucket_file = os.path.join(index_path, f"{hash_str}.dat")
     if os.path.exists(bucket_file):
         indices = np.memmap(bucket_file, dtype=np.uint32, mode='r')
         return indices
@@ -72,7 +72,7 @@ def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: 
         if file == "plane_norms.dat":
             continue
         current_hash=file.split(".npy")[0]
-        distance=HammingDistance(hash_int, int(current_hash))
+        distance=HammingDistance(hash_str, current_hash)
         if distance<min_distance:
             min_distance=distance
             closest_hash=current_hash
