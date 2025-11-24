@@ -1,34 +1,23 @@
 import numpy as np
 import os
-from scipy.linalg import orth
 DIMENSION=64
 SEED=3
 
-def compute_hash(vector: np.ndarray, plane_norms: np.ndarray) -> str:
-    dot_products = np.dot(vector, plane_norms.T)
-    hash_bits = (dot_products > 0).astype(int)[0]
-    hash_str = ''.join(hash_bits.astype(str))
-    return hash_str
 
 def HammingDistance(s1: str, s2: str) -> int:
     """Compute the Hamming distance between two 6-bit strings."""
-    return (int(s1, 2) ^ int(s2, 2)).bit_count()
+    return bin(s1 ^ s2).count("1")
 
 
 def orthogonal_planes(num_planes, dim):
-    # 2. Generate a random M x M matrix
+    """
+    Generate num_planes orthogonal vectors in dim-dimensional space.
+    QR decomposition ensures orthogonality (improves LSH distribution).
+    """
     A = np.random.randn(dim, dim)
+    Q, _ = np.linalg.qr(A)
+    return Q.T[:num_planes, :].astype(np.float32)  # shape: (num_planes, dim
 
-    # 3. Perform QR decomposition to get an orthonormal matrix Q
-    # The columns of Q are the basis vectors for R^M.
-    Q, R = np.linalg.qr(A)
-
-    # 4. Extract the first N rows of the transpose of Q (Q.T)
-    # The rows of Q.T are the original orthonormal columns of Q.
-    # Taking the first N rows gives us N mutually orthogonal basis vectors.
-    Orthogonal_Basis_Set = Q.T[:num_planes, :]
-
-    return Orthogonal_Basis_Set
 
 
 def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int):
@@ -37,18 +26,24 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
     hash_buckets = {}   
     Projections=np.dot(dataset_vectors, plane_norms.T)
     hash_bits = (Projections > 0).astype(int)
+
     for i in range(len(dataset_vectors)):
-        hash_str = ''.join(hash_bits[i].astype(str))
-        if hash_str not in hash_buckets:
-            hash_buckets[hash_str] = []
-        hash_buckets[hash_str].append(i)
+        hash_int = hash_bits[i].dot(1 << np.arange(num_planes)[::-1])
+        if hash_int not in hash_buckets:
+            hash_buckets[hash_int] = []
+        hash_buckets[hash_int].append(i)
 
     if not os.path.exists(index_path):
         os.makedirs(index_path)
 
     for key in hash_buckets:
-        optimized_int=np.array(hash_buckets[key], dtype=np.uint32)
-        np.save(os.path.join(index_path, f"{key}.npy"), optimized_int)
+        optimized_int = np.array(hash_buckets[key], dtype=np.uint32)
+        bucket_file = os.path.join(index_path, f"{key}.dat")
+        mmap_bucket = np.memmap(bucket_file, dtype=np.uint32, mode='w+', shape=optimized_int.shape)
+        mmap_bucket[:] = optimized_int[:]
+        mmap_bucket.flush()
+
+    np.save(os.path.join(index_path, "hash_keys.npy"), np.array(list(hash_buckets.keys())))
 
     #make memmap for plane norms
     plane_norms_path = os.path.join(index_path, "plane_norms.dat")
@@ -62,24 +57,27 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
 def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: str):
     dot_products = np.dot(query_vector, Plane_norms.T)
     hash_bits = (dot_products > 0).astype(int)[0]
-    hash_str = ''.join(hash_bits.astype(str))
+    hash_int = hash_bits.dot(1 << np.arange(len(hash_bits))[::-1])
+
+
+    # hash_str = ''.join(hash_bits.astype(str))
 
     indices = []
-    try:
-        bucket_file = os.path.join(index_path, f"{hash_str}.npy")
-        indices=np.load(bucket_file)
-    except:
-        files=os.listdir(index_path)
-        min_distance=float('inf')
-        closest_hash=None
-        for file in files:
-            if file == "plane_norms.dat":
-                continue
-            current_hash=file.split(".npy")[0]
-            distance=HammingDistance(hash_str, current_hash)
-            if distance<min_distance:
-                min_distance=distance
-                closest_hash=current_hash
-        if closest_hash is not None:
-            indices=np.load(os.path.join(index_path, f"{closest_hash}.npy"))
+    bucket_file = os.path.join(index_path, f"{hash_int}.dat")
+    if os.path.exists(bucket_file):
+        indices = np.memmap(bucket_file, dtype=np.uint32, mode='r')
+        return indices
+    files=np.load(os.path.join(index_path, "hash_keys.npy"))
+    min_distance=float('inf')
+    closest_hash=None
+    for file in files:
+        if file == "plane_norms.dat":
+            continue
+        current_hash=file.split(".npy")[0]
+        distance=HammingDistance(hash_int, current_hash)
+        if distance<min_distance:
+            min_distance=distance
+            closest_hash=current_hash
+    if closest_hash is not None:
+        indices=np.memmap(os.path.join(index_path, f"{closest_hash}.dat"), dtype=np.uint32, mode='r')
     return indices
