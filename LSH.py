@@ -6,7 +6,7 @@ SEED=3
 
 def HammingDistance(s1: str, s2: str) -> int:
     """Compute the Hamming distance between two 6-bit strings."""
-    return bin(s1 ^ s2).count("1")
+    return (int(s1, 2) ^ int(s2, 2)).bit_count()
 
 
 def orthogonal_planes(num_planes, dim):
@@ -26,7 +26,7 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
     hash_buckets = {}   
     Projections=np.dot(dataset_vectors, plane_norms.T)
     hash_bits = (Projections > 0).astype(int)
-
+    
     for i in range(len(dataset_vectors)):
         hash_int = hash_bits[i].dot(1 << np.arange(num_planes)[::-1])
         if hash_int not in hash_buckets:
@@ -55,15 +55,14 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
 
 
 def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: str):
+    if query_vector.ndim == 1:
+        query_vector = query_vector.reshape(1, -1)
     dot_products = np.dot(query_vector, Plane_norms.T)
     hash_bits = (dot_products > 0).astype(int)[0]
-    hash_int = hash_bits.dot(1 << np.arange(len(hash_bits))[::-1])
-
-
-    # hash_str = ''.join(hash_bits.astype(str))
+    hash_str = ''.join(hash_bits.astype(str))
 
     indices = []
-    bucket_file = os.path.join(index_path, f"{hash_int}.dat")
+    bucket_file = os.path.join(index_path, f"{hash_str}.dat")
     if os.path.exists(bucket_file):
         indices = np.memmap(bucket_file, dtype=np.uint32, mode='r')
         return indices
@@ -74,7 +73,7 @@ def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: 
         if file == "plane_norms.dat":
             continue
         current_hash=file.split(".npy")[0]
-        distance=HammingDistance(hash_int, current_hash)
+        distance=HammingDistance(hash_str, current_hash)
         if distance<min_distance:
             min_distance=distance
             closest_hash=current_hash
