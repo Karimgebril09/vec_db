@@ -147,6 +147,7 @@ def retrieve_LSH_multi_tables(query_vector: np.ndarray, index_path: str, num_tab
 
         # Compute hash bits
         dot_products = np.dot(query_vector, plane_norms.T)
+        del plane_norms
         hash_bits = (dot_products > 0).astype(int)[0]
         hash_str = "".join(map(str, hash_bits))
 
@@ -156,15 +157,25 @@ def retrieve_LSH_multi_tables(query_vector: np.ndarray, index_path: str, num_tab
             indices = np.memmap(bucket_file, dtype=np.uint32, mode='r')
             all_indices.update(indices.tolist())
         else:
-            # Fallback: find nearest bucket by Hamming distance
-            files = np.load(os.path.join(table_path, "hash_keys.npy"))
-            min_distance = float('inf')
+            files = np.load(os.path.join(table_path, "hash_keys.npy"), allow_pickle=True)
             closest_hash = None
+
+            # First pass: look for 1-bit difference
             for f in files:
                 distance = sum(c1 != c2 for c1, c2 in zip(hash_str, f))
-                if distance < min_distance:
-                    min_distance = distance
+                if distance == 1:
                     closest_hash = f
+                    break
+
+            # Second pass: look for 2-bit difference if no 1-bit found
+            if closest_hash is None:
+                for f in files:
+                    distance = sum(c1 != c2 for c1, c2 in zip(hash_str, f))
+                    if distance == 2:
+                        closest_hash = f
+                        break
+
+            # Load the closest bucket if found
             if closest_hash is not None:
                 indices = np.memmap(os.path.join(table_path, f"{closest_hash}.dat"), dtype=np.uint32, mode='r')
                 all_indices.update(indices.tolist())

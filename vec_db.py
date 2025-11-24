@@ -10,7 +10,7 @@ ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
 
 # my consts
-NUM_PLANES = 16
+NUM_PLANES = 18
 NUM_TABLES = 3
 
 class VecDB:
