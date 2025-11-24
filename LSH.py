@@ -135,6 +135,8 @@ def retrieve_LSH_multi_tables(query_vector: np.ndarray, index_path: str, num_tab
     Retrieve candidate indices from all LSH tables for the query vector.
     """
     all_indices = set()  # Use set to avoid duplicates
+    if query_vector.ndim ==1:
+        query_vector = query_vector.reshape(1, -1)  # Ensure it's 1D
 
     for t in range(num_tables):
         table_path = os.path.join(index_path, f"table_{t}")
