@@ -1,3 +1,4 @@
 *.dat
 /LSH_index/
 *pycache*
+*.zip

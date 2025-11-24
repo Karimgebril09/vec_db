@@ -10,8 +10,8 @@ ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
 
 # my consts
-NUM_PLANES = 18
-NUM_TABLES = 3
+NUM_PLANES = 8
+NUM_TABLES = 4
 
 class VecDB:
     def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
@@ -26,8 +26,8 @@ class VecDB:
             self.generate_database(db_size)
     
     def generate_database(self, size: int) -> None:
-        rng = np.random.default_rng(DB_SEED_NUMBER)
-        vectors = rng.random((size, DIMENSION), dtype=np.float32)
+        # rng = np.random.default_rng(DB_SEED_NUMBER)
+        vectors = np.memmap("OpenSubtitles_en_20M_emb_64.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
         self._write_vectors_to_file(vectors)
         self._build_index()
 
