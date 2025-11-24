@@ -28,7 +28,7 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
     hash_bits = (Projections > 0).astype(int)
     
     for i in range(len(dataset_vectors)):
-        hash_str = "".join(map(str, hash_bits[i]))
+        hash_str = ''.join(hash_bits[i].astype(str))
         
         if hash_str not in hash_buckets:
             hash_buckets[hash_str] = []
@@ -54,10 +54,11 @@ def Build_LSH_index(index_path:str,dataset_vectors: np.ndarray, num_planes: int)
 
     print("LSH index built successfully.")
 
-
 def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: str):
     dot_products = np.dot(query_vector, Plane_norms.T)
-    hash_bits = (dot_products > 0).astype(int)[0]
+    hash_bits = (dot_products > 0).astype(int)
+    if hash_bits.ndim > 1:
+        hash_bits = hash_bits[0] 
     hash_str = "".join(map(str, hash_bits))
 
     indices = []
@@ -79,3 +80,95 @@ def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: 
     if closest_hash is not None:
         indices=np.memmap(os.path.join(index_path, f"{closest_hash}.dat"), dtype=np.uint32, mode='r')
     return indices
+
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################
+
+def Build_LSH_index_multi_tables(index_path: str, dataset_vectors: np.ndarray, num_tables: int, planes_per_table: int):
+    np.random.seed(SEED)
+    
+    if not os.path.exists(index_path):
+        os.makedirs(index_path)
+
+    for t in range(num_tables):
+        table_path = os.path.join(index_path, f"table_{t}")
+        os.makedirs(table_path, exist_ok=True)
+
+        plane_norms = orthogonal_planes(planes_per_table, DIMENSION)
+        projections = np.dot(dataset_vectors, plane_norms.T)
+        hash_bits = (projections > 0).astype(int)
+
+        hash_buckets = {}
+        for i in range(len(dataset_vectors)):
+            hash_str = "".join(map(str, hash_bits[i]))
+            if hash_str not in hash_buckets:
+                hash_buckets[hash_str] = []
+            hash_buckets[hash_str].append(i)
+
+        # Save each bucket as memmap
+        for key in hash_buckets:
+            indices = np.array(hash_buckets[key], dtype=np.uint32)
+            bucket_file = os.path.join(table_path, f"{key}.dat")
+            mmap_bucket = np.memmap(bucket_file, dtype=np.uint32, mode='w+', shape=indices.shape)
+            mmap_bucket[:] = indices[:]
+            mmap_bucket.flush()
+
+        # Save plane norms
+        plane_file = os.path.join(table_path, "plane_norms.dat")
+        mmap_planes = np.memmap(plane_file, dtype=np.float32, mode='w+', shape=plane_norms.shape)
+        mmap_planes[:] = plane_norms[:]
+        mmap_planes.flush()
+
+        # Save hash keys
+        np.save(os.path.join(table_path, "hash_keys.npy"), np.array(list(hash_buckets.keys())))
+
+    print(f"LSH index built successfully with {num_tables} tables, {planes_per_table} planes per table.")
+
+
+def retrieve_LSH_multi_tables(query_vector: np.ndarray, index_path: str, num_tables: int,num_planes: int):
+    """
+    Retrieve candidate indices from all LSH tables for the query vector.
+    """
+    all_indices = set()  # Use set to avoid duplicates
+
+    for t in range(num_tables):
+        table_path = os.path.join(index_path, f"table_{t}")
+
+        # Load plane norms for this table
+        plane_file = os.path.join(table_path, "plane_norms.dat")
+        plane_norms = np.memmap(plane_file, dtype=np.float32, mode='r',
+                                shape=(num_planes, DIMENSION))
+           
+
+        # Compute hash bits
+        dot_products = np.dot(query_vector, plane_norms.T)
+        hash_bits = (dot_products > 0).astype(int)[0]
+        hash_str = "".join(map(str, hash_bits))
+
+        # Try to load exact bucket
+        bucket_file = os.path.join(table_path, f"{hash_str}.dat")
+        if os.path.exists(bucket_file):
+            indices = np.memmap(bucket_file, dtype=np.uint32, mode='r')
+            all_indices.update(indices.tolist())
+        else:
+            # Fallback: find nearest bucket by Hamming distance
+            files = np.load(os.path.join(table_path, "hash_keys.npy"))
+            min_distance = float('inf')
+            closest_hash = None
+            for f in files:
+                distance = sum(c1 != c2 for c1, c2 in zip(hash_str, f))
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_hash = f
+            if closest_hash is not None:
+                indices = np.memmap(os.path.join(table_path, f"{closest_hash}.dat"), dtype=np.uint32, mode='r')
+                all_indices.update(indices.tolist())
+
+    return np.array(list(all_indices), dtype=np.uint32)
+
+

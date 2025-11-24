@@ -3,14 +3,15 @@ import numpy as np
 import os
 # my imports
 import heapq
-from LSH import SEED, Build_LSH_index, retreive_LSH
+from LSH import SEED, Build_LSH_index, retreive_LSH, Build_LSH_index_multi_tables, retrieve_LSH_multi_tables
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
 
 # my consts
-NUM_PLANES = 12
+NUM_PLANES = 16
+NUM_TABLES = 3
 
 class VecDB:
     def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
@@ -66,9 +67,9 @@ class VecDB:
     def retrieve(self, query: Annotated[np.ndarray, (1, DIMENSION)], top_k = 5):
         heap = []
         np.random.seed(SEED)
-        plane_norms = np.memmap(os.path.join(self.index_path, "plane_norms.dat"), dtype=np.float32, mode='r', shape=(NUM_PLANES, DIMENSION))
-        rows_num=retreive_LSH(plane_norms, query, self.index_path)
-
+        # plane_norms = np.memmap(os.path.join(self.index_path, "plane_norms.dat"), dtype=np.float32, mode='r', shape=(NUM_PLANES, DIMENSION))
+        rows_num=retrieve_LSH_multi_tables(query, self.index_path, num_tables=NUM_TABLES, num_planes=NUM_PLANES)
+        # rows_num=retreive_LSH(plane_norms, query, self.index_path)
         # here we assume that the row number is the ID of each vector
         for row_num in rows_num:
             vector = self.get_one_row(row_num)
@@ -92,4 +93,5 @@ class VecDB:
     def _build_index(self):
         # Placeholder for index building logic
         all_vectors=self.get_all_rows()
-        Build_LSH_index(self.index_path, all_vectors, num_planes=NUM_PLANES)
+        Build_LSH_index_multi_tables(self.index_path, all_vectors, num_tables=NUM_TABLES, planes_per_table=NUM_PLANES)
+        # Build_LSH_index(self.index_path, all_vectors, NUM_PLANES)
