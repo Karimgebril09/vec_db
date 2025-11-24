@@ -14,24 +14,6 @@ def HammingDistance(s1: str, s2: str) -> int:
     """Compute the Hamming distance between two 6-bit strings."""
     return (int(s1, 2) ^ int(s2, 2)).bit_count()
 
-def check_orthogonal(planes: np.ndarray, tol: float = 1e-6) -> bool:
-    """
-    Check if all rows in `planes` are mutually orthogonal.
-
-    planes: np.ndarray of shape (num_planes, dim)
-    tol: tolerance for floating point comparison
-
-    Returns True if all planes are orthogonal, False otherwise.
-    """
-    # Compute the dot product matrix between rows
-    dot_matrix = np.dot(planes, planes.T)  # shape (num_planes, num_planes)
-
-    # Identity matrix for comparison
-    identity = np.eye(planes.shape[0], dtype=planes.dtype)
-
-    # Compare: off-diagonal elements should be 0, diagonal should be 1
-    return np.allclose(dot_matrix, identity, atol=tol)
-
 
 def orthogonal_planes(num_planes, dim):
     # 2. Generate a random M x M matrix
@@ -46,7 +28,6 @@ def orthogonal_planes(num_planes, dim):
     # Taking the first N rows gives us N mutually orthogonal basis vectors.
     Orthogonal_Basis_Set = Q.T[:num_planes, :]
 
-    assert check_orthogonal(Orthogonal_Basis_Set), "Planes are not orthogonal"
     return Orthogonal_Basis_Set
 
 
@@ -88,6 +69,17 @@ def retreive_LSH(Plane_norms: np.ndarray, query_vector: np.ndarray, index_path: 
         bucket_file = os.path.join(index_path, f"{hash_str}.npy")
         indices=np.load(bucket_file)
     except:
-        pass
-        # print("Bucket not found")
+        files=os.listdir(index_path)
+        min_distance=float('inf')
+        closest_hash=None
+        for file in files:
+            if file == "plane_norms.dat":
+                continue
+            current_hash=file.split(".npy")[0]
+            distance=HammingDistance(hash_str, current_hash)
+            if distance<min_distance:
+                min_distance=distance
+                closest_hash=current_hash
+        if closest_hash is not None:
+            indices=np.load(os.path.join(index_path, f"{closest_hash}.npy"))
     return indices
