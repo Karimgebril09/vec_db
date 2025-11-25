@@ -86,7 +86,7 @@ class VecDB:
     
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=100):
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=50):
         query = np.asarray(query, dtype=np.float32).squeeze()
 
         query_norm = np.linalg.norm(query)
@@ -112,26 +112,25 @@ class VecDB:
             elif num_records == 15 * 10**6:
                 n_probe = 10
 
-        # batch_size = 100
-        # top_scores = np.full(n_probe, -np.inf, dtype=np.float32)
-        # top_indices = np.full(n_probe, -1, dtype=np.int32)
+        batch_size = 50
+        min_heap = []
 
-        # for start in range(0, n_centroids, batch_size):
-        #     end = min(start + batch_size, n_centroids)
-        #     batch = centroids[start:end]  # only this batch is loaded in RAM
-        #     sims = batch.dot(normalized_query)
+        for start in range(0, n_centroids, batch_size):
+            end = min(start + batch_size, n_centroids)
+            batch = centroids[start:end]  # only this batch is loaded in RAM
+            sims = batch.dot(normalized_query)
 
-        #     # Combine current batch with current top
-        #     combined_scores = np.concatenate([top_scores, sims])
-        #     combined_indices = np.concatenate([top_indices, np.arange(start, end)])
+            for i, score in enumerate(sims):
+                centroid_index = start + i
+                if len(min_heap) < n_probe:
+                    heapq.heappush(min_heap, (score, centroid_index))
+                else:
+                    heapq.heappushpop(min_heap, (score, centroid_index))
+            
+            del batch, sims
 
-        #     # Keep only top n_probe
-        #     idx = np.argpartition(combined_scores, -n_probe)[-n_probe:]
-        #     top_scores = combined_scores[idx]
-        #     top_indices = combined_indices[idx]
 
-
-        # nearest_centroids = top_indices[np.argsort(-top_scores)].tolist()      
+        nearest_centroids = [centroid_index for score, centroid_index in heapq.nlargest(n_probe, min_heap)]
 
         # Compute similarity (cosine) to all centroids
         sims = centroids.dot(normalized_query)
