@@ -1,5 +1,3 @@
-
-
 import json
 import numpy as np
 import os
@@ -85,9 +83,10 @@ class VecDB:
 ####################################################################################
 
 
+    
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=5000):
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=1000):
         query = np.asarray(query, dtype=np.float32).squeeze()
 
         query_norm = np.linalg.norm(query)
@@ -113,39 +112,38 @@ class VecDB:
             elif num_records == 15 * 10**6:
                 n_probe = 10
 
-        batch_size = 100
-        top_scores = np.full(n_probe, -np.inf, dtype=np.float32)
-        top_indices = np.full(n_probe, -1, dtype=np.int32)
+        # batch_size = 100
+        # top_scores = np.full(n_probe, -np.inf, dtype=np.float32)
+        # top_indices = np.full(n_probe, -1, dtype=np.int32)
 
-        for start in range(0, n_centroids, batch_size):
-            end = min(start + batch_size, n_centroids)
-            batch = centroids[start:end]  # only this batch is loaded in RAM
-            sims = batch.dot(normalized_query)
+        # for start in range(0, n_centroids, batch_size):
+        #     end = min(start + batch_size, n_centroids)
+        #     batch = centroids[start:end]  # only this batch is loaded in RAM
+        #     sims = batch.dot(normalized_query)
 
-            # Combine current batch with current top
-            combined_scores = np.concatenate([top_scores, sims])
-            combined_indices = np.concatenate([top_indices, np.arange(start, end)])
+        #     # Combine current batch with current top
+        #     combined_scores = np.concatenate([top_scores, sims])
+        #     combined_indices = np.concatenate([top_indices, np.arange(start, end)])
 
-            # Keep only top n_probe
-            idx = np.argpartition(combined_scores, -n_probe)[-n_probe:]
-            top_scores = combined_scores[idx]
-            top_indices = combined_indices[idx]
+        #     # Keep only top n_probe
+        #     idx = np.argpartition(combined_scores, -n_probe)[-n_probe:]
+        #     top_scores = combined_scores[idx]
+        #     top_indices = combined_indices[idx]
 
 
-        nearest_centroids = top_indices[np.argsort(-top_scores)].tolist()      
+        # nearest_centroids = top_indices[np.argsort(-top_scores)].tolist()      
 
-        
+        # Compute similarity (cosine) to all centroids
+        sims = centroids.dot(normalized_query)
+        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
 
         # Clean up memory
         del centroids, sims
 
-        # Load header that tells us where in the flat index file each cluster's indices are
-        header_path = os.path.join(self.index_path, "index_header.json")
-        with open(header_path, "r") as hf:
-            header = json.load(hf)
 
-        # Turn header into a dict for faster lookup: cid -> (offset, length)
-        header_dict = {item["cid"]: (item["offset"], item["length"]) for item in header}
+        header_arr = np.fromfile(os.path.join(self.index_path, "index_header.bin"), dtype=np.uint32)
+        header_arr = header_arr.reshape(-1, 2)   # shape: (num_centroids, 2)
+
 
         # Prepare top-k heap
         top_heap = []
@@ -154,7 +152,8 @@ class VecDB:
 
         # For each centroid to probe:
         for c in nearest_centroids:
-            offset, length = header_dict[c]
+            offset  = header_arr[c, 0]   # first column
+            length  = header_arr[c, 1]   # second column
             if length == 0:
                 continue
 
@@ -178,21 +177,25 @@ class VecDB:
                     else:
                         heapq.heappushpop(top_heap, (score, id))
 
-                del chunk_ids,vecs,scores
+                del scores, chunk_ids
 
 
         # Extract and return top-k IDs sorted by score
         results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
         del top_heap
+       
         return results
 
+
+    
+
     def _build_index(self):
-        # data is a reference to the memmap object, not the data in RAM
-        data = self.get_all_rows()
-        
-        
+       
         # sqrt(N) rule
         self.no_centroids = 2000
+        # data is a reference to the memmap object, not the data in RAM
+        data = self.get_all_rows()
+
         kmeans = KMeans(
             n_clusters=self.no_centroids,
             init='k-means++',   # <-- Use k-means++ initialization
@@ -204,12 +207,17 @@ class VecDB:
         # labels and centers are new arrays created in RAM
         labels = kmeans.labels_
         centers = kmeans.cluster_centers_.astype(np.float32)
+
         # Added deletion of the memmap reference and the kmeans object
         del data
         del kmeans
+       
+         
 
-
-                
+        if os.path.exists(self.index_path):
+            shutil.rmtree(self.index_path)  # remove old index if any
+        os.makedirs(self.index_path, exist_ok=True)
+               
         if not os.path.isdir(self.index_path):
             os.makedirs(self.index_path, exist_ok=True)
         # 1. Build up a list of (cluster_id, indices_array)
@@ -218,23 +226,24 @@ class VecDB:
             indices = np.where(labels == cid)[0].astype(np.uint32)
             cluster_infos.append((cid, indices))
 
-        # 2. Write all indices into one big flat file
+      
+        header = []
+
         flat_path = os.path.join(self.index_path, "all_indices.bin")
         with open(flat_path, "wb") as f:
             offset = 0
-            header = []  # list of (cid, offset, length)
             for cid, inds in cluster_infos:
                 length = inds.size
-                f.write(inds.tobytes())  # or .tofile but with offset tracking
-                header.append((cid, offset, length))
+                f.write(inds.tobytes())
+                header.append([offset, length])
                 offset += length * inds.dtype.itemsize
 
-        # 3. Write header metadata
-        header_path = os.path.join(self.index_path, "index_header.json")
+        # Convert to a matrix (2 columns: offset, length)
+        header_matrix = np.array(header, dtype=np.uint32)
 
-        with open(header_path, "w") as hf:
-            json.dump([{"cid": cid, "offset": off, "length": length} for cid, off, length in header], hf)
-
+        # Save matrix as binary file
+        header_bin_path = os.path.join(self.index_path, "index_header.bin")
+        header_matrix.tofile(header_bin_path)
 
         norms = np.linalg.norm(centers, axis=1, keepdims=True)
         centers = centers / (norms + 1e-12)
