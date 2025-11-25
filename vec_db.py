@@ -1,109 +1,260 @@
-from typing import Dict, List, Annotated
+
+import json
 import numpy as np
 import os
-# import importlib, IVF
-# importlib.reload(IVF)
-from IVF import IVFIndex  # import your class
+import shutil
+import tqdm
+import heapq
+from sklearn.cluster import KMeans
+from itertools import chain
 
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
 
+
 class VecDB:
-    def __init__(self, database_file_path = "saved_db.dat", index_file_path = "ivf_index", new_db = True, db_size = None) -> None:
+    def __init__(self,
+                 database_file_path="saved_db.dat",
+                 index_file_path="index.dat",
+                 new_db=True,
+                 db_size=None) -> None:
+
         self.db_path = database_file_path
         self.index_path = index_file_path
+        self.no_centroids = 0
 
-
-        self.n_clusters = 100  # default number of clusters
-        self.n_probe = 5       # default number of clusters to probe
-
-
-        self.ivf_index = None  # IVFIndex instance
         if new_db:
             if db_size is None:
-                raise ValueError("You need to provide the size of the database")
-            # delete the old DB file if exists
+                raise ValueError("You need to provide db_size")
             if os.path.exists(self.db_path):
                 os.remove(self.db_path)
             self.generate_database(db_size)
-    
-    def generate_database(self, size: int) -> None:
-        rng = np.random.default_rng(DB_SEED_NUMBER)
-        vectors = rng.random((size, DIMENSION), dtype=np.float32)
-        self._write_vectors_to_file(vectors)
-        self._build_index()
 
-    def _write_vectors_to_file(self, vectors: np.ndarray) -> None:
-        mmap_vectors = np.memmap(self.db_path, dtype=np.float32, mode='w+', shape=vectors.shape)
+    # -------------------------
+    # DB helpers
+    # -------------------------
+
+    def _get_num_records(self):
+        # No change needed, simple calculation
+        return os.path.getsize(self.db_path) // (DIMENSION * ELEMENT_SIZE)
+
+    def _write_vectors_to_file(self, vectors):
+        vectors = vectors.astype(np.float32)
+
+        # normalize
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        vectors = vectors / norms
+
+        mmap_vectors = np.memmap(self.db_path, dtype=np.float32, mode="w+", shape=vectors.shape)
         mmap_vectors[:] = vectors[:]
         mmap_vectors.flush()
 
-    def _get_num_records(self) -> int:
-        return os.path.getsize(self.db_path) // (DIMENSION * ELEMENT_SIZE)
+        # Added deletion of temporary vectors and memmap object
+        del vectors
+        del norms
+        del mmap_vectors # Delete the reference to the mmap object
 
-    def insert_records(self, rows: Annotated[np.ndarray, (int, 64)]):
-        num_old_records = self._get_num_records()
-        num_new_records = len(rows)
-        full_shape = (num_old_records + num_new_records, DIMENSION)
-        mmap_vectors = np.memmap(self.db_path, dtype=np.float32, mode='r+', shape=full_shape)
-        mmap_vectors[num_old_records:] = rows
-        mmap_vectors.flush()
-        #TODO: might change to call insert in the index, if you need
+    def get_all_rows_memmap(self):
+        # No change needed, returns a read-only memmap object
+        num_records = self._get_num_records()
+        return np.memmap(self.db_path, dtype=np.float32, mode="r",
+                         shape=(num_records, DIMENSION))
+
+    # -------------------------
+    # Database creation
+    # -------------------------
+
+    def generate_database(self, size):
+        rng = np.random.default_rng(DB_SEED_NUMBER)
+        vectors = rng.random((size, DIMENSION), dtype=np.float32)
+
+        # NOTE: vectors is a large temporary array in RAM
+        self._write_vectors_to_file(vectors)
+
+        # Added immediate deletion of the temporary vectors array after writing
+        del vectors
+
         self._build_index()
 
-    def get_one_row(self, row_num: int) -> np.ndarray:
-        # This function is only load one row in memory
-        try:
-            offset = row_num * DIMENSION * ELEMENT_SIZE
-            mmap_vector = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(1, DIMENSION), offset=offset)
-            return np.array(mmap_vector[0])
-        except Exception as e:
-            return f"An error occurred: {e}"
+    # -------------------------
+    # RANDOM ACCESS (zero RAM)
+    # -------------------------
 
-    def get_all_rows(self) -> np.ndarray:
-        # Take care this load all the data in memory
-        num_records = self._get_num_records()
-        vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
-        return np.array(vectors)
-    
-    def retrieve(self, query: np.ndarray, top_k=5):
-        # Automatically load the index if not loaded
-        if self.ivf_index is None:
-            print("IVF index not loaded. Loading from file...")
-            self.ivf_index = IVFIndex()
-            self.ivf_index.load(self.index_path, mmap=True)  # use 'mmap' instead of mmap_ids
+    def get_rows(self, ids):
+        """
+        Return mmap slices WITHOUT copying (the slice itself is a view, zero-copy).
+        BUT indexing with a list/array of IDs *causes* a copy of the actual data
+        into a new contiguous array in RAM. This is unavoidable in numpy.
+        """
+        ids = np.asarray(ids, dtype=np.uint32)
+        if ids.size == 0:
+            # Added deletion of temporary ids array if size is 0
+            del ids
+            return np.empty((0, DIMENSION), dtype=np.float32)
 
-        if not self.ivf_index.fitted:
-            raise ValueError("IVF index not built or loaded correctly.")
+        mmap_vectors = self.get_all_rows_memmap()
 
-        # Use the IVFIndex retrieve function with get_row for memory efficiency
-        top_indices = self.ivf_index.retrieve(
-            query_vector=query,
-            n_clusters=self.n_probe,
-            n_arrays=top_k,
-            cosine_similarity=self._cal_score,
-            get_row=self.get_one_row  
-        )
-        return top_indices
+        # IMPORTANT: This copies data into a new RAM array for the selected IDs.
+        data_copy = mmap_vectors[ids]
 
-    
-    def _cal_score(self, vec1, vec2):
-        dot_product = np.dot(vec1, vec2)
-        norm_vec1 = np.linalg.norm(vec1)
-        norm_vec2 = np.linalg.norm(vec2)
-        cosine_similarity = dot_product / (norm_vec1 * norm_vec2)
-        return cosine_similarity
+        # Added deletion of the main memmap reference
+        del mmap_vectors
+        del ids
 
+        return data_copy
+
+    # -------------------------
+    # Retrieval
+    # -------------------------
+
+
+
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=10000):
+        query = np.asarray(query, dtype=np.float32).squeeze()
+
+        query_norm = np.linalg.norm(query)
+        if query_norm == 0:
+            query_norm = 1.0
+        normalized_query = query / query_norm
+
+        centers_path = os.path.join(self.index_path, "centers.npy")
+        if not os.path.exists(centers_path):
+            del query, normalized_query
+            return []
+
+        # Load centroids with memory-mapping to save RAM
+        centroids = np.load(centers_path, mmap_mode="r")
+        n_centroids = centroids.shape[0]
+
+        # Determine number of centroids to probe
+        if n_probe is None:
+            n_probe = max(1, min(n_centroids, int(np.sqrt(self._get_num_records()))))
+            num_records = self._get_num_records()
+            if num_records <= 10 * 10**6:
+                n_probe = 12
+            elif num_records == 15 * 10**6:
+                n_probe = 10
+
+        # Compute similarity (cosine) to all centroids
+        sims = centroids.dot(normalized_query)
+        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
+
+        # Clean up memory
+        del centroids, sims
+
+        # Load header that tells us where in the flat index file each cluster's indices are
+        header_path = os.path.join(self.index_path, "index_header.json")
+        with open(header_path, "r") as hf:
+            header = json.load(hf)
+
+        # Turn header into a dict for faster lookup: cid -> (offset, length)
+        header_dict = {item["cid"]: (item["offset"], item["length"]) for item in header}
+
+        # Prepare top-k heap
+        top_heap = []
+
+        flat_index_path = os.path.join(self.index_path, "all_indices.bin")
+
+        # For each centroid to probe:
+        for c in nearest_centroids:
+            offset, length = header_dict[c]
+            if length == 0:
+                continue
+
+            # Process each chunk by remapping the memmap for that chunk
+            for start in range(0, length, chunk_size):
+                cur_len = min(chunk_size, length - start)
+                # Remap only this chunk
+                ids_mm = np.memmap(flat_index_path, dtype=np.uint32, mode="r",
+                                offset=offset + start * np.dtype(np.uint32).itemsize,
+                                shape=(cur_len,))
+
+                chunk_ids = ids_mm[:]  # copy if you need to
+                del ids_mm  # free memmap
+
+                vectors = self.get_rows(chunk_ids)
+                norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                np.divide(vectors, norms, out=vectors)  # in-place normalization
+
+                scores = vectors.dot(normalized_query)
+
+                for idx, score in zip(chunk_ids, scores):
+                    if len(top_heap) < top_k:
+                        heapq.heappush(top_heap, (score, idx))
+                    else:
+                        heapq.heappushpop(top_heap, (score, idx))
+
+                del vectors, scores, chunk_ids
+
+
+
+
+        # Extract and return top-k IDs sorted by score
+        results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
+        del top_heap
+        return results
+
+
+ 
     def _build_index(self):
+       
+        # sqrt(N) rule
+        self.no_centroids = max(1, int(np.sqrt(self._get_num_records())) * 2)
+        # data is a reference to the memmap object, not the data in RAM
+        data = self.get_all_rows_memmap()
 
-        # Load all vectors once to fit KMeans
-        vectors = self.get_all_rows()
-        self.ivf_index = IVFIndex(n_clusters=self.n_clusters)
-        self.ivf_index.fit(vectors)
-        
-        # Save the index to disk
-        self.ivf_index.save(self.index_path)
-        print("IVF index built and saved.")
+        kmeans = KMeans(
+            n_clusters=self.no_centroids,
+            init='k-means++',   # <-- Use k-means++ initialization
+            random_state=42 
+        )
 
+        kmeans.fit(data)
+
+        # labels and centers are new arrays created in RAM
+        labels = kmeans.labels_
+        centers = kmeans.cluster_centers_.astype(np.float32)
+
+        # Added deletion of the memmap reference and the kmeans object
+        del data
+        del kmeans
+
+
+               
+        if not os.path.isdir(self.index_path):
+            os.makedirs(self.index_path, exist_ok=True)
+        # 1. Build up a list of (cluster_id, indices_array)
+        cluster_infos = []
+        for cid in range(self.no_centroids):
+            indices = np.where(labels == cid)[0].astype(np.uint32)
+            cluster_infos.append((cid, indices))
+
+
+        # 2. Write all indices into one big flat file
+        flat_path = os.path.join(self.index_path, "all_indices.bin")
+        with open(flat_path, "wb") as f:
+            offset = 0
+            header = []  # list of (cid, offset, length)
+            for cid, inds in cluster_infos:
+                length = inds.size
+                f.write(inds.tobytes())  # or .tofile but with offset tracking
+                header.append((cid, offset, length))
+                offset += length * inds.dtype.itemsize
+
+        # 3. Write header metadata
+        header_path = os.path.join(self.index_path, "index_header.json")
+
+        with open(header_path, "w") as hf:
+            json.dump([{"cid": cid, "offset": off, "length": length} for cid, off, length in header], hf)
+
+
+        norms = np.linalg.norm(centers, axis=1, keepdims=True)
+        centers = centers / (norms + 1e-12)
+        # 4. Save centers as before
+        np.save(os.path.join(self.index_path, "centers.npy"), centers)
+
+            
