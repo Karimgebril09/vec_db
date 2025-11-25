@@ -1,4 +1,5 @@
 
+
 import json
 import numpy as np
 import os
@@ -6,109 +7,77 @@ import shutil
 import tqdm
 import heapq
 from sklearn.cluster import KMeans
-from itertools import chain
+from typing import Annotated
 
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
 
-
 class VecDB:
-    def __init__(self,
-                 database_file_path="saved_db.dat",
-                 index_file_path="index.dat",
-                 new_db=True,
-                 db_size=None) -> None:
-
+    def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
         self.db_path = database_file_path
         self.index_path = index_file_path
-        self.no_centroids = 0
-
         if new_db:
             if db_size is None:
-                raise ValueError("You need to provide db_size")
+                raise ValueError("You need to provide the size of the database")
+            # delete the old DB file if exists
             if os.path.exists(self.db_path):
                 os.remove(self.db_path)
             self.generate_database(db_size)
+    
+    def generate_database(self, size: int) -> None:
+        # rng = np.random.default_rng(DB_SEED_NUMBER)
+        vectors = np.memmap("new_embeddings.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
+        self._write_vectors_to_file(vectors)
+        self._build_index()
 
-    # -------------------------
-    # DB helpers
-    # -------------------------
-
-    def _get_num_records(self):
-        # No change needed, simple calculation
-        return os.path.getsize(self.db_path) // (DIMENSION * ELEMENT_SIZE)
-
-    def _write_vectors_to_file(self, vectors):
-        vectors = vectors.astype(np.float32)
-
-        # normalize
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        vectors = vectors / norms
-
-        mmap_vectors = np.memmap(self.db_path, dtype=np.float32, mode="w+", shape=vectors.shape)
+    def _write_vectors_to_file(self, vectors: np.ndarray) -> None:
+        mmap_vectors = np.memmap(self.db_path, dtype=np.float32, mode='w+', shape=vectors.shape)
         mmap_vectors[:] = vectors[:]
         mmap_vectors.flush()
 
-        # Added deletion of temporary vectors and memmap object
-        del vectors
-        del norms
-        del mmap_vectors # Delete the reference to the mmap object
+    def _get_num_records(self) -> int:
+        return os.path.getsize(self.db_path) // (DIMENSION * ELEMENT_SIZE)
 
-    def get_all_rows_memmap(self):
-        # No change needed, returns a read-only memmap object
-        num_records = self._get_num_records()
-        return np.memmap(self.db_path, dtype=np.float32, mode="r",
-                         shape=(num_records, DIMENSION))
-
-    # -------------------------
-    # Database creation
-    # -------------------------
-
-    def generate_database(self, size):
-        rng = np.random.default_rng(DB_SEED_NUMBER)
-        vectors = rng.random((size, DIMENSION), dtype=np.float32)
-
-        # NOTE: vectors is a large temporary array in RAM
-        self._write_vectors_to_file(vectors)
-
-        # Added immediate deletion of the temporary vectors array after writing
-        del vectors
-
+    def insert_records(self, rows: Annotated[np.ndarray, (int, 64)]):
+        num_old_records = self._get_num_records()
+        num_new_records = len(rows)
+        full_shape = (num_old_records + num_new_records, DIMENSION)
+        mmap_vectors = np.memmap(self.db_path, dtype=np.float32, mode='r+', shape=full_shape)
+        mmap_vectors[num_old_records:] = rows
+        mmap_vectors.flush()
+        #TODO: might change to call insert in the index, if you need
         self._build_index()
 
-    # -------------------------
-    # RANDOM ACCESS (zero RAM)
-    # -------------------------
+    def get_one_row(self, row_num: int) -> np.ndarray:
+        # This function is only load one row in memory
+        try:
+            offset = row_num * DIMENSION * ELEMENT_SIZE
+            mmap_vector = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(1, DIMENSION), offset=offset)
+            return np.array(mmap_vector[0])
+        except Exception as e:
+            return f"An error occurred: {e}"
 
-    def get_rows(self, ids):
-        """
-        Return mmap slices WITHOUT copying (the slice itself is a view, zero-copy).
-        BUT indexing with a list/array of IDs *causes* a copy of the actual data
-        into a new contiguous array in RAM. This is unavoidable in numpy.
-        """
-        ids = np.asarray(ids, dtype=np.uint32)
-        if ids.size == 0:
-            # Added deletion of temporary ids array if size is 0
-            del ids
-            return np.empty((0, DIMENSION), dtype=np.float32)
+    def get_all_rows(self) -> np.ndarray:
+        # Take care this load all the data in memory
+        num_records = self._get_num_records()
+        vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
+        return np.array(vectors)
+    
+    
+    
+    def _cal_score(self, vec1, vec2):
+        dot_product = np.dot(vec1, vec2)
+        norm_vec1 = np.linalg.norm(vec1)
+        norm_vec2 = np.linalg.norm(vec2)
+        cosine_similarity = dot_product / (norm_vec1 * norm_vec2)
+        return cosine_similarity
 
-        mmap_vectors = self.get_all_rows_memmap()
+####################################################################################
+####################################################################################
+####################################################################################
 
-        # IMPORTANT: This copies data into a new RAM array for the selected IDs.
-        data_copy = mmap_vectors[ids]
-
-        # Added deletion of the main memmap reference
-        del mmap_vectors
-        del ids
-
-        return data_copy
-
-    # -------------------------
-    # Retrieval
-    # -------------------------
 
 
 
@@ -175,20 +144,21 @@ class VecDB:
                 chunk_ids = ids_mm[:]  # copy if you need to
                 del ids_mm  # free memmap
 
-                vectors = self.get_rows(chunk_ids)
-                norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-                norms[norms == 0] = 1.0
-                np.divide(vectors, norms, out=vectors)  # in-place normalization
-
-                scores = vectors.dot(normalized_query)
-
-                for idx, score in zip(chunk_ids, scores):
+                for id in chunk_ids:
+                    vec = self.get_one_row(id)
+                    norm = np.linalg.norm(vec)
+                    score = vec.dot(normalized_query)
                     if len(top_heap) < top_k:
-                        heapq.heappush(top_heap, (score, idx))
+                        heapq.heappush(top_heap, (score, id))
                     else:
-                        heapq.heappushpop(top_heap, (score, idx))
+                        heapq.heappushpop(top_heap, (score, id))
 
-                del vectors, scores, chunk_ids
+                    del vec, score
+                
+
+
+
+                del chunk_ids
 
 
 
@@ -198,15 +168,13 @@ class VecDB:
         del top_heap
         return results
 
-
- 
     def _build_index(self):
-       
-        # sqrt(N) rule
-        self.no_centroids = max(1, int(np.sqrt(self._get_num_records())) * 2)
         # data is a reference to the memmap object, not the data in RAM
-        data = self.get_all_rows_memmap()
-
+        data = self.get_all_rows()
+        
+        
+        # sqrt(N) rule
+        self.no_centroids = 250
         kmeans = KMeans(
             n_clusters=self.no_centroids,
             init='k-means++',   # <-- Use k-means++ initialization
@@ -218,13 +186,12 @@ class VecDB:
         # labels and centers are new arrays created in RAM
         labels = kmeans.labels_
         centers = kmeans.cluster_centers_.astype(np.float32)
-
         # Added deletion of the memmap reference and the kmeans object
         del data
         del kmeans
 
 
-               
+                
         if not os.path.isdir(self.index_path):
             os.makedirs(self.index_path, exist_ok=True)
         # 1. Build up a list of (cluster_id, indices_array)
@@ -232,7 +199,6 @@ class VecDB:
         for cid in range(self.no_centroids):
             indices = np.where(labels == cid)[0].astype(np.uint32)
             cluster_infos.append((cid, indices))
-
 
         # 2. Write all indices into one big flat file
         flat_path = os.path.join(self.index_path, "all_indices.bin")
@@ -255,6 +221,4 @@ class VecDB:
         norms = np.linalg.norm(centers, axis=1, keepdims=True)
         centers = centers / (norms + 1e-12)
         # 4. Save centers as before
-        np.save(os.path.join(self.index_path, "centers.npy"), centers)
-
-            
+        np.save(os.path.join(self.index_path, "centroids.npy"), centers)
