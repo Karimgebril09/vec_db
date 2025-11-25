@@ -89,7 +89,7 @@ class VecDB:
             query_norm = 1.0
         normalized_query = query / query_norm
 
-        centers_path = os.path.join(self.index_path, "centers.npy")
+        centers_path = os.path.join(self.index_path, "centroids.npy")
         if not os.path.exists(centers_path):
             del query, normalized_query
             return []
@@ -107,9 +107,28 @@ class VecDB:
             elif num_records == 15 * 10**6:
                 n_probe = 10
 
-        # Compute similarity (cosine) to all centroids
-        sims = centroids.dot(normalized_query)
-        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
+        batch_size = 100
+        top_scores = np.full(n_probe, -np.inf, dtype=np.float32)
+        top_indices = np.full(n_probe, -1, dtype=np.int32)
+
+        for start in range(0, n_centroids, batch_size):
+            end = min(start + batch_size, n_centroids)
+            batch = centroids[start:end]  # only this batch is loaded in RAM
+            sims = batch.dot(normalized_query)
+
+            # Combine current batch with current top
+            combined_scores = np.concatenate([top_scores, sims])
+            combined_indices = np.concatenate([top_indices, np.arange(start, end)])
+
+            # Keep only top n_probe
+            idx = np.argpartition(combined_scores, -n_probe)[-n_probe:]
+            top_scores = combined_scores[idx]
+            top_indices = combined_indices[idx]
+
+
+        nearest_centroids = top_indices[np.argsort(-top_scores)].tolist()      
+
+        
 
         # Clean up memory
         del centroids, sims
