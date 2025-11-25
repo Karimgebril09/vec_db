@@ -86,7 +86,7 @@ class VecDB:
     
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=1000):
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=100):
         query = np.asarray(query, dtype=np.float32).squeeze()
 
         query_norm = np.linalg.norm(query)
