@@ -65,6 +65,12 @@ class VecDB:
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
     
+    def get_all_ids_rows(self,ids) -> np.ndarray:
+        # Take care this load all the data in memory
+        num_records = self._get_num_records()
+        vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
+        return vectors[ids]
+    
     
     
     def _cal_score(self, vec1, vec2):
@@ -81,7 +87,7 @@ class VecDB:
 
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=10000):
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=5000):
         query = np.asarray(query, dtype=np.float32).squeeze()
 
         query_norm = np.linalg.norm(query)
@@ -160,26 +166,19 @@ class VecDB:
                                 offset=offset + start * np.dtype(np.uint32).itemsize,
                                 shape=(cur_len,))
 
-                chunk_ids = ids_mm[:]  # copy if you need to
+                chunk_ids = ids_mm[:]  
                 del ids_mm  # free memmap
 
-                for id in chunk_ids:
-                    vec = self.get_one_row(id)
-                    norm = np.linalg.norm(vec)
-                    score = vec.dot(normalized_query)
+                
+                vecs = self.get_all_ids_rows(chunk_ids)
+                scores = vecs.dot(normalized_query)
+                for score, id in zip(scores, chunk_ids):
                     if len(top_heap) < top_k:
                         heapq.heappush(top_heap, (score, id))
                     else:
                         heapq.heappushpop(top_heap, (score, id))
 
-                    del vec, score
-                
-
-
-
-                del chunk_ids
-
-
+                del chunk_ids,vecs,scores
 
 
         # Extract and return top-k IDs sorted by score
@@ -193,7 +192,7 @@ class VecDB:
         
         
         # sqrt(N) rule
-        self.no_centroids = 250
+        self.no_centroids = 2000
         kmeans = KMeans(
             n_clusters=self.no_centroids,
             init='k-means++',   # <-- Use k-means++ initialization
