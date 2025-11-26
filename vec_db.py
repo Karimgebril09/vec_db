@@ -63,11 +63,24 @@ class VecDB:
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
     
-    def get_all_ids_rows(self,ids) -> np.ndarray:
-        # Take care this load all the data in memory
+    def get_all_ids_rows(self, ids) -> np.ndarray:
+        """
+        Load only the requested rows from the memmap, without loading all data in RAM.
+        Updated: Instead of loading all vectors into memory, we load only the requested batch.
+        """
         num_records = self._get_num_records()
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
-        return vectors[ids]
+        
+        # Sort IDs to access memmap sequentially (faster disk read)
+        sorted_idx = np.argsort(ids)
+        sorted_ids = np.array(ids)[sorted_idx]
+        
+        # Load only selected rows
+        result = np.empty((len(ids), DIMENSION), dtype=np.float32)
+        result[sorted_idx] = vectors[sorted_ids]
+        
+        del vectors
+        return result
     
     
     
@@ -86,7 +99,7 @@ class VecDB:
     
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=75):
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=50):
         self.no_centroids = 7000
         self.index_path = f"index_10M_{self.no_centroids}_centroids"
         query = np.asarray(query, dtype=np.float32).squeeze()
@@ -105,36 +118,35 @@ class VecDB:
         centroids = np.load(centers_path, mmap_mode="r")
         n_centroids = centroids.shape[0]
 
-        # Determine number of centroids to probe
         if n_probe is None:
-            n_probe = max(1, min(n_centroids, int(np.sqrt(self._get_num_records()))))
             num_records = self._get_num_records()
-            if num_records <= 10 * 10**6:
-                n_probe = 12
-            elif num_records == 15 * 10**6:
-                n_probe = 10
-            else:
-                n_probe = 12
+            n_probe = 12 if num_records <= 15_000_000 else 10
 
-        batch_size = 75
-        min_heap = []
+        # batch_size = 50
+        # min_heap = []
 
-        for start in range(0, n_centroids, batch_size):
-            end = min(start + batch_size, n_centroids)
-            batch = centroids[start:end]  # only this batch is loaded in RAM
-            sims = batch.dot(normalized_query)
+        # for start in range(0, n_centroids, batch_size):
+        #     end = min(start + batch_size, n_centroids)
+        #     batch = centroids[start:end]  # only this batch is loaded in RAM
+        #     sims = batch.dot(normalized_query)
 
-            for i, score in enumerate(sims):
-                centroid_index = start + i
-                if len(min_heap) < n_probe:
-                    heapq.heappush(min_heap, (score, centroid_index))
-                elif score > min_heap[0][0]:
-                    heapq.heappushpop(min_heap, (score, centroid_index))
+        #     for i, score in enumerate(sims):
+        #         centroid_index = start + i
+        #         if len(min_heap) < n_probe:
+        #             heapq.heappush(min_heap, (score, centroid_index))
+        #         elif score > min_heap[0][0]:
+        #             heapq.heappushpop(min_heap, (score, centroid_index))
             
-            del batch, sims
+        #     del batch, sims
 
 
-        nearest_centroids = [centroid_index for score, centroid_index in heapq.nlargest(n_probe, min_heap)]
+        # nearest_centroids = [centroid_index for score, centroid_index in heapq.nlargest(n_probe, min_heap)]
+        # del centroids
+        sims = centroids.dot(normalized_query)
+        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
+        # sort descending
+        # nearest_centroids_idx = nearest_centroids_idx[np.argsort(sims[nearest_centroids_idx])[::-1]]
+        del sims
         del centroids
 
 
