@@ -2,10 +2,11 @@ import zipfile
 import os
 import shutil
 # ----- CONSTANTS -----
-INDEX_SIZE = 1
-FOLDER_NAME = f"LSH_index"
-ZIP_NAME = f"{FOLDER_NAME}_{INDEX_SIZE}M.zip"
-DRIVE_FOLDER = "G:/My Drive/Vector_db_indexes/LSH"
+INDEX_SIZE = 10
+CENTROIDS_NUMBER=7000
+FOLDER_NAME = f"index_{INDEX_SIZE}M_{CENTROIDS_NUMBER}_centroids"
+ZIP_NAME = f"{FOLDER_NAME}.zip"
+DRIVE_FOLDER = "G:/My Drive/Vector_db_indexes/IVF"
 # ----------------------
 
 def zip_folder(folder_path, zip_path):
@@ -37,4 +38,3 @@ if __name__ == "__main__":
 
     zip_folder(FOLDER_NAME, ZIP_NAME)
     upload_to_google_drive_local(ZIP_NAME)
-    print(f"Compressed folder structure only → {ZIP_NAME}")
