@@ -6,7 +6,7 @@ import tqdm
 import heapq
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from typing import Annotated
-
+import time
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
@@ -63,22 +63,29 @@ class VecDB:
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
     
-    def get_all_ids_rows(self, ids) -> np.ndarray:
-        """
-        Load only the requested rows from the memmap, without loading all data in RAM.
-        Updated: Instead of loading all vectors into memory, we load only the requested batch.
-        """
+    def get_all_ids_rows_optimized(self, ids):
+        ids = np.array(ids)
         num_records = self._get_num_records()
-        vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
-        
-        # Sort IDs to access memmap sequentially (faster disk read)
+
         sorted_idx = np.argsort(ids)
-        sorted_ids = np.array(ids)[sorted_idx]
+        sorted_ids = ids[sorted_idx]
+
+        base = sorted_ids[0]
+        row_size_bytes = DIMENSION * np.dtype(np.float32).itemsize
+        offset = base * row_size_bytes
+
+        # memmap starting from the base
+        vectors = np.memmap(
+            self.db_path, dtype=np.float32, mode='r',
+            offset=offset,
+            shape=(num_records - base, DIMENSION)
+        )
+
+        local_ids = sorted_ids - base
         
-        # Load only selected rows
         result = np.empty((len(ids), DIMENSION), dtype=np.float32)
-        result[sorted_idx] = vectors[sorted_ids]
-        
+        result[sorted_idx] = vectors[local_ids]
+
         del vectors
         return result
     
@@ -116,11 +123,10 @@ class VecDB:
 
         # Load centroids with memory-mapping to save RAM
         centroids = np.load(centers_path, mmap_mode="r")
-        n_centroids = centroids.shape[0]
 
         if n_probe is None:
             num_records = self._get_num_records()
-            n_probe = 12 if num_records <= 15_000_000 else 10
+            n_probe = 10 if num_records <= 15_000_000 else 8
 
         # batch_size = 50
         # min_heap = []
@@ -144,8 +150,6 @@ class VecDB:
         # del centroids
         sims = centroids.dot(normalized_query)
         nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
-        # sort descending
-        # nearest_centroids_idx = nearest_centroids_idx[np.argsort(sims[nearest_centroids_idx])[::-1]]
         del sims
         del centroids
 
@@ -158,7 +162,6 @@ class VecDB:
         top_heap = []
 
         flat_index_path = os.path.join(self.index_path, "all_indices.bin")
-
         # For each centroid to probe:
         for c in nearest_centroids:
             offset  = header_arr[c, 0]   # first column
@@ -178,7 +181,7 @@ class VecDB:
                 del ids_mm  # free memmap
 
                 
-                vecs = self.get_all_ids_rows(chunk_ids)
+                vecs = self.get_all_ids_rows_optimized(chunk_ids)
                 scores = vecs.dot(normalized_query)
                 for score, id in zip(scores, chunk_ids):
                     if len(top_heap) < top_k:
@@ -188,11 +191,13 @@ class VecDB:
 
                 del scores, chunk_ids
 
-
         # Extract and return top-k IDs sorted by score
         results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
         del top_heap
-       
+        # print(f"Time for centroid similarity calculation: {end_time - start_time} seconds")
+    
+        # print(f"Time for memory cleanup: {end2 - start2} seconds")
+        # print(f"Time for processing chunks: {end3 - start3} seconds")
         return results
 
 
