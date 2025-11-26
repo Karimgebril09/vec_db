@@ -106,162 +106,170 @@ class VecDB:
     
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=50):
+    def retrieve(self, query, top_k=5, n_probe_level2=5, n_probe_level1=6, chunk_size=50):
         self.no_centroids = 7000
-        self.index_path = f"index_10M_{self.no_centroids}_centroids"
-        query = np.asarray(query, dtype=np.float32).squeeze()
+        self.no_level2_centroids = 80
+        self.index_path = f"index_10M_{self.no_level2_centroids}_{self.no_centroids}_centroids"
 
+        query = np.asarray(query, dtype=np.float32).squeeze()
         query_norm = np.linalg.norm(query)
         if query_norm == 0:
             query_norm = 1.0
         normalized_query = query / query_norm
 
-        centers_path = os.path.join(self.index_path, "centroids.npy")
-        if not os.path.exists(centers_path):
-            del query, normalized_query
+        centroids_level2_path = os.path.join(self.index_path, "centroids_level2.npy")
+        centroids_level1_path = os.path.join(self.index_path, "centroids.npy")
+        if not os.path.exists(centroids_level2_path) or not os.path.exists(centroids_level1_path):
             return []
 
-        # Load centroids with memory-mapping to save RAM
-        centroids = np.load(centers_path, mmap_mode="r")
+        # Load headers
+        level2_header_arr = np.fromfile(
+            os.path.join(self.index_path, "level2_header.bin"), dtype=np.uint32
+        ).reshape(-1, 2)
+        index_header_arr = np.fromfile(
+            os.path.join(self.index_path, "index_header.bin"), dtype=np.uint32
+        ).reshape(-1, 2)
+        flat_index_path = os.path.join(self.index_path, "all_indices.bin")
 
-        if n_probe is None:
-            num_records = self._get_num_records()
-            n_probe = 10 if num_records <= 15_000_000 else 8
+        # Load level-2 centroids
+        centroids_level2 = np.load(centroids_level2_path, mmap_mode="r")
+        sims_level2 = centroids_level2.dot(normalized_query)
+        # pick top n_probe_level2 level2 centroids
+        nearest_level2 = np.argpartition(sims_level2, -n_probe_level2)[-n_probe_level2:]
+        del sims_level2, centroids_level2
 
-        # batch_size = 50
-        # min_heap = []
-
-        # for start in range(0, n_centroids, batch_size):
-        #     end = min(start + batch_size, n_centroids)
-        #     batch = centroids[start:end]  # only this batch is loaded in RAM
-        #     sims = batch.dot(normalized_query)
-
-        #     for i, score in enumerate(sims):
-        #         centroid_index = start + i
-        #         if len(min_heap) < n_probe:
-        #             heapq.heappush(min_heap, (score, centroid_index))
-        #         elif score > min_heap[0][0]:
-        #             heapq.heappushpop(min_heap, (score, centroid_index))
-            
-        #     del batch, sims
-
-
-        # nearest_centroids = [centroid_index for score, centroid_index in heapq.nlargest(n_probe, min_heap)]
-        # del centroids
-        sims = centroids.dot(normalized_query)
-        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
-        del sims
-        del centroids
-
-
-        header_arr = np.fromfile(os.path.join(self.index_path, "index_header.bin"), dtype=np.uint32)
-        header_arr = header_arr.reshape(-1, 2)   # shape: (num_centroids, 2)
-
-
-        # Prepare top-k heap
+        centroids_level1 = np.load(centroids_level1_path, mmap_mode="r")
         top_heap = []
 
-        flat_index_path = os.path.join(self.index_path, "all_indices.bin")
-        # For each centroid to probe:
-        for c in nearest_centroids:
-            offset  = header_arr[c, 0]   # first column
-            length  = header_arr[c, 1]   # second column
-            if length == 0:
+        # Iterate over selected top-level clusters
+        for lvl2_idx in nearest_level2:
+            offset_lvl2, length_lvl2 = level2_header_arr[lvl2_idx]
+            if length_lvl2 == 0:
                 continue
 
-            # Process each chunk by remapping the memmap for that chunk
-            for start in range(0, length, chunk_size):
-                cur_len = min(chunk_size, length - start)
-                # Remap only this chunk
-                ids_mm = np.memmap(flat_index_path, dtype=np.uint32, mode="r",
-                                offset=offset + start * np.dtype(np.uint32).itemsize,
-                                shape=(cur_len,))
+            # slice first-level centroids for this level2 cluster
+            level1_start = offset_lvl2
+            level1_end = offset_lvl2 + length_lvl2
+            sims_level1 = centroids_level1[level1_start:level1_end].dot(normalized_query)
 
-                chunk_ids = ids_mm[:]  
-                del ids_mm  # free memmap
+            # pick top n_probe_level1 first-level centroids
+            nearest_first_level = np.argpartition(sims_level1, -n_probe_level1)[-n_probe_level1:]
+            del sims_level1
 
-                
-                vecs = self.get_all_ids_rows_optimized(chunk_ids)
-                scores = vecs.dot(normalized_query)
-                for score, id in zip(scores, chunk_ids):
-                    if len(top_heap) < top_k:
-                        heapq.heappush(top_heap, (score, id))
-                    else:
-                        heapq.heappushpop(top_heap, (score, id))
+            for idx in nearest_first_level:
+                # map to global first-level index
+                c = level1_start + idx
+                offset, length = index_header_arr[c]
+                if length == 0:
+                    continue
 
-                del scores, chunk_ids
+                # process vectors in chunks
+                for start in range(0, length, chunk_size):
+                    cur_len = min(chunk_size, length - start)
+                    ids_mm = np.memmap(
+                        flat_index_path,
+                        dtype=np.uint32,
+                        mode="r",
+                        offset=offset + start * np.dtype(np.uint32).itemsize,
+                        shape=(cur_len,)
+                    )
+                    chunk_ids = ids_mm[:]
+                    del ids_mm
 
-        # Extract and return top-k IDs sorted by score
+                    vecs = self.get_all_ids_rows_optimized(chunk_ids)
+                    scores = vecs.dot(normalized_query)
+
+                    for score, id in zip(scores, chunk_ids):
+                        if len(top_heap) < top_k:
+                            heapq.heappush(top_heap, (score, id))
+                        else:
+                            heapq.heappushpop(top_heap, (score, id))
+
+                    del scores, chunk_ids, vecs
+
+        # extract top-k sorted
         results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
         del top_heap
-        # print(f"Time for centroid similarity calculation: {end_time - start_time} seconds")
-    
-        # print(f"Time for memory cleanup: {end2 - start2} seconds")
-        # print(f"Time for processing chunks: {end3 - start3} seconds")
         return results
+
 
 
     
 
     def _build_index(self):
-       
-        # sqrt(N) rule
         self.no_centroids = 7000
-        self.index_path = f"index_10M_{self.no_centroids}_centroids"
-        # data is a reference to the memmap object, not the data in RAM
+        self.no_level2_centroids = 80
+        self.index_path = f"index_10M_{self.no_level2_centroids}_{self.no_centroids}_centroids"
+
         data = self.get_all_rows()
 
+        # 1-level clustering
         kmeans = MiniBatchKMeans(
             n_clusters=self.no_centroids,
-            init="k-means++",   # supported and default
+            init="k-means++",
             batch_size=10_000,
             random_state=42
         )
-
         kmeans.fit(data)
-
-        # labels and centers are new arrays created in RAM
         labels = kmeans.labels_
         centers = kmeans.cluster_centers_.astype(np.float32)
-
-        # Added deletion of the memmap reference and the kmeans object
-        del data
-        del kmeans
-       
-         
+        del data, kmeans
 
         if os.path.exists(self.index_path):
-            shutil.rmtree(self.index_path)  # remove old index if any
+            shutil.rmtree(self.index_path)
         os.makedirs(self.index_path, exist_ok=True)
-               
-        if not os.path.isdir(self.index_path):
-            os.makedirs(self.index_path, exist_ok=True)
-        # 1. Build up a list of (cluster_id, indices_array)
-        cluster_infos = []
-        for cid in range(self.no_centroids):
-            indices = np.where(labels == cid)[0].astype(np.uint32)
-            cluster_infos.append((cid, indices))
 
-      
+        cluster_infos = [(cid, np.where(labels == cid)[0].astype(np.uint32))
+                        for cid in range(self.no_centroids)]
+
+        # 2-level clustering
+        kmeans2 = MiniBatchKMeans(
+            n_clusters=self.no_level2_centroids,
+            init="k-means++",
+            batch_size=1000,
+            random_state=42,
+        )
+        kmeans2.fit(centers)
+        centers2 = kmeans2.cluster_centers_.astype(np.float32)
+        labels2 = kmeans2.labels_
+        cluster_level2_infos = [(cid, np.where(labels2 == cid)[0].astype(np.uint32))
+                            for cid in range(self.no_level2_centroids)]
+
+        reordered_centers = []
+        reordered_cluster_infos = []
+        for _, inds in cluster_level2_infos:
+            for ind in inds:
+                reordered_centers.append(centers[ind])
+                reordered_cluster_infos.append(cluster_infos[ind])
+        centers = np.array(reordered_centers, dtype=np.float32)
+        cluster_infos = reordered_cluster_infos
+        del labels, labels2
+        del reordered_centers, reordered_cluster_infos
+
         header = []
-
         flat_path = os.path.join(self.index_path, "all_indices.bin")
         with open(flat_path, "wb") as f:
             offset = 0
-            for cid, inds in cluster_infos:
+            for _, inds in cluster_infos:
                 length = inds.size
                 f.write(inds.tobytes())
                 header.append([offset, length])
                 offset += length * inds.dtype.itemsize
-
-        # Convert to a matrix (2 columns: offset, length)
         header_matrix = np.array(header, dtype=np.uint32)
+        header_matrix.tofile(os.path.join(self.index_path, "index_header.bin"))
 
-        # Save matrix as binary file
-        header_bin_path = os.path.join(self.index_path, "index_header.bin")
-        header_matrix.tofile(header_bin_path)
+        # save level2 header (offset, length) for easy slicing later
+        level2_header = []
+        offset = 0
+        for _, inds in cluster_level2_infos:
+            length = len(inds)  
+            level2_header.append([offset, length])
+            offset += length
+        np.array(level2_header, dtype=np.uint32).tofile(os.path.join(self.index_path, "level2_header.bin"))
 
-        norms = np.linalg.norm(centers, axis=1, keepdims=True)
-        centers = centers / (norms + 1e-12)
-        # 4. Save centers as before
+        # normalize centers
+        centers /= (np.linalg.norm(centers, axis=1, keepdims=True) + 1e-12)
         np.save(os.path.join(self.index_path, "centroids.npy"), centers)
+
+        centers2 /= (np.linalg.norm(centers2, axis=1, keepdims=True) + 1e-12)
+        np.save(os.path.join(self.index_path, "centroids_level2.npy"), centers2)
