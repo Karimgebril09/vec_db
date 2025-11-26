@@ -4,7 +4,7 @@ import shutil
 # ----- CONSTANTS -----
 INDEX_SIZE = 10
 CENTROIDS_NUMBER=7000
-FOLDER_NAME = f"index_{INDEX_SIZE}M_{CENTROIDS_NUMBER}_centroids"
+FOLDER_NAME = f"index_{INDEX_SIZE}M_80_{CENTROIDS_NUMBER}_centroids"
 ZIP_NAME = f"{FOLDER_NAME}.zip"
 DRIVE_FOLDER = "G:/My Drive/Vector_db_indexes/IVF"
 # ----------------------
