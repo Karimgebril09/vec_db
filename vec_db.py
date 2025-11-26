@@ -4,7 +4,7 @@ import os
 import shutil
 import tqdm
 import heapq
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from typing import Annotated
 
 
@@ -86,7 +86,9 @@ class VecDB:
     
 
 
-    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=50):
+    def retrieve(self, query, top_k=5, n_probe=None, chunk_size=75):
+        self.no_centroids = 7000
+        self.index_path = f"index_10M_{self.no_centroids}_centroids"
         query = np.asarray(query, dtype=np.float32).squeeze()
 
         query_norm = np.linalg.norm(query)
@@ -111,8 +113,10 @@ class VecDB:
                 n_probe = 12
             elif num_records == 15 * 10**6:
                 n_probe = 10
+            else:
+                n_probe = 12
 
-        batch_size = 50
+        batch_size = 75
         min_heap = []
 
         for start in range(0, n_centroids, batch_size):
@@ -124,20 +128,14 @@ class VecDB:
                 centroid_index = start + i
                 if len(min_heap) < n_probe:
                     heapq.heappush(min_heap, (score, centroid_index))
-                else:
+                elif score > min_heap[0][0]:
                     heapq.heappushpop(min_heap, (score, centroid_index))
             
             del batch, sims
 
 
         nearest_centroids = [centroid_index for score, centroid_index in heapq.nlargest(n_probe, min_heap)]
-
-        # Compute similarity (cosine) to all centroids
-        sims = centroids.dot(normalized_query)
-        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
-
-        # Clean up memory
-        del centroids, sims
+        del centroids
 
 
         header_arr = np.fromfile(os.path.join(self.index_path, "index_header.bin"), dtype=np.uint32)
@@ -191,14 +189,16 @@ class VecDB:
     def _build_index(self):
        
         # sqrt(N) rule
-        self.no_centroids = 2000
+        self.no_centroids = 7000
+        self.index_path = f"index_10M_{self.no_centroids}_centroids"
         # data is a reference to the memmap object, not the data in RAM
         data = self.get_all_rows()
 
-        kmeans = KMeans(
+        kmeans = MiniBatchKMeans(
             n_clusters=self.no_centroids,
-            init='k-means++',   # <-- Use k-means++ initialization
-            random_state=42 
+            init="k-means++",   # supported and default
+            batch_size=10_000,
+            random_state=42
         )
 
         kmeans.fit(data)
