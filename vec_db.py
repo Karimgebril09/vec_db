@@ -176,7 +176,7 @@ class VecDB:
 
         all_ids.sort()
         top_heap = []   
-        chunk_size = 1000
+        chunk_size = 100
         for i in range(0, len(all_ids), chunk_size):
             sub_ids = all_ids[i:i+chunk_size]
             vecs = self.get_all_ids_rows_optimized(sub_ids)
