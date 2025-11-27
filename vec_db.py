@@ -62,35 +62,63 @@ class VecDB:
         num_records = self._get_num_records()
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
-   
+    
     def get_all_ids_rows_optimized(self, ids):
-        ids = np.asarray(ids, dtype=np.int64)
+        """
+        Load rows corresponding to a list of IDs from disk efficiently.
+        Reads a single contiguous block from start_id to end_id, then selects only required IDs.
+
+        ids: list or np.array of integers (IDs within a window)
+        returns: np.array of shape (len(ids), DIMENSION)
+        """
+        ids = np.array(ids, dtype=np.uint32)
+        ids.sort()  # ensure sorted
+
+        start_id = ids[0]
+        end_id = ids[-1]
+
+        # Read contiguous block from disk (from start_id to end_id)
+        offset = start_id * DIMENSION * 4   # float32 = 4 bytes
+        shape = (end_id - start_id + 1, DIMENSION)
+
+        block = np.memmap(self.db_path, dtype=np.float32, mode='r', offset=offset, shape=shape)
+        block_array = block[:]  
+        del block  
+
+        # Compute relative indices within the block
+        relative_indices = ids - start_id
+
+        # Select only the rows we care about
+        rows = block_array[relative_indices, :]
+        del block_array
+
+        return rows
         
-        # --- Compute contiguous block boundaries ---
-        base = ids[0]
-        end = ids[-1] + 1
-        shape = (end - base, DIMENSION)
+    
 
-        row_size_bytes = DIMENSION * np.dtype(np.float32).itemsize
-        offset = base * row_size_bytes
+    def group_ids_by_window_fast(self, all_ids, window):
+        all_ids = np.asarray(all_ids)
+        n = all_ids.size
+        if n == 0:
+            return []
 
-        # --- Load contiguous block from memmap ---
-        vectors = np.memmap(
-            self.db_path, dtype=np.float32, mode='r',
-            offset=offset,
-            shape=shape
-        )
+        # Compute per-element group max = all_ids[i] + window
+        limits = all_ids + window
 
-        # --- Prepare output buffer ---
-        result = np.empty((len(ids), DIMENSION), dtype=np.float32)
+        # For each i, ends[i] = first index where id > limits[i]
+        ends = np.searchsorted(all_ids, limits + 1, side="left")
 
-        # --- Correct indexing ---
-        local_ids = ids - base        # positions inside the contiguous memmap block
-        result[:] = vectors[local_ids]  # fill sequentially
+        # We find group starts: a new group starts where i == previous group's end
+        starts = [0]
+        for i in range(1, n):
+            if ends[i-1] == i:
+                starts.append(i)
 
-        # cleanup
-        del vectors
-        return result
+        starts = np.array(starts, dtype=np.int64)
+        group_ends = ends[starts]
+        groups = [all_ids[s:e] for s, e in zip(starts, group_ends)]
+        return groups
+
     
     
     def _cal_score(self, vec1, vec2):
@@ -161,7 +189,7 @@ class VecDB:
 
 
         all_ids = []
-
+        time0 = time.time()
         flat_index_path = os.path.join(self.index_path, "all_indices.bin")
         for c in nearest_centroids:
             offset  = header_arr[c, 0]   # first column
@@ -174,21 +202,24 @@ class VecDB:
             del ids_mm  
             all_ids.extend(db_ids)
 
+
         all_ids.sort()
-        top_heap = []   
-        chunk_size = 100
-        for i in range(0, len(all_ids), chunk_size):
-            sub_ids = all_ids[i:i+chunk_size]
-            vecs = self.get_all_ids_rows_optimized(sub_ids)
+
+        grouped_ids = self.group_ids_by_window_fast(all_ids, window=1500)
+        del all_ids 
+        top_heap = []
+
+        for group in grouped_ids:
+            vecs = self.get_all_ids_rows_optimized(group)
             scores = vecs.dot(normalized_query)
-            for score, id in zip(scores, sub_ids):
+            for score, id in zip(scores, group):
                 if len(top_heap) < top_k:
                     heapq.heappush(top_heap, (score, id))
                 else:
                     heapq.heappushpop(top_heap, (score, id))
 
             del scores, vecs
-        del all_ids
+        del grouped_ids
 
         results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
         del top_heap
