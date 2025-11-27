@@ -151,37 +151,39 @@ class VecDB:
             del query, normalized_query
             return []
 
-        # Load centroids with memory-mapping to save RAM
         centroids = np.load(centers_path, mmap_mode="r")
+        num_centroids, dim = centroids.shape
 
+        # Auto n_probe choice
         if n_probe is None:
-            num_records = self._get_num_records()
-            n_probe = 10 if num_records <= 15_000_000 else 8
+            n_probe = 10 if num_centroids <= 15_000_000 else 8
 
-        # batch_size = 50
-        # min_heap = []
+        heap = []
 
-        # for start in range(0, n_centroids, batch_size):
-        #     end = min(start + batch_size, n_centroids)
-        #     batch = centroids[start:end]  # only this batch is loaded in RAM
-        #     sims = batch.dot(normalized_query)
+        # Loop over batches
+        for start in range(0, num_centroids, 2000):
+            end = min(start + 2000, num_centroids)
 
-        #     for i, score in enumerate(sims):
-        #         centroid_index = start + i
-        #         if len(min_heap) < n_probe:
-        #             heapq.heappush(min_heap, (score, centroid_index))
-        #         elif score > min_heap[0][0]:
-        #             heapq.heappushpop(min_heap, (score, centroid_index))
-            
-        #     del batch, sims
+            batch = centroids[start:end]
 
+            sims = batch.dot(normalized_query)
 
-        # nearest_centroids = [centroid_index for score, centroid_index in heapq.nlargest(n_probe, min_heap)]
-        # del centroids
-        sims = centroids.dot(normalized_query)
-        nearest_centroids = np.argpartition(sims, -n_probe)[-n_probe:]
-        del sims
+            # Insert into heap
+            for i, s in enumerate(sims):
+                cid = start + i
+                if len(heap) < n_probe:
+                    heapq.heappush(heap, (s, cid))
+                else:
+                    heapq.heappushpop(heap, (s, cid))
+
+            del sims
+
         del centroids
+
+          # Extract top n_probe IDs sorted descending similarity
+        top = heapq.nlargest(n_probe, heap)
+        nearest_centroids = np.array([cid for (_, cid) in top], dtype=np.int32)
+        del heap, top
 
 
         header_arr = np.fromfile(os.path.join(self.index_path, "index_header.bin"), dtype=np.uint32)
@@ -189,7 +191,6 @@ class VecDB:
 
 
         all_ids = []
-        time0 = time.time()
         flat_index_path = os.path.join(self.index_path, "all_indices.bin")
         for c in nearest_centroids:
             offset  = header_arr[c, 0]   # first column
