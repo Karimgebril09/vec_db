@@ -7,6 +7,7 @@ import heapq
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from typing import Annotated
 import time
+import gc
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
@@ -63,34 +64,39 @@ class VecDB:
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
     
-    def get_all_ids_rows_optimized(self, ids):
+    def get_all_ids_rows_seek(self, ids):
         """
-        Load rows corresponding to a list of IDs from disk efficiently.
-        Reads a single contiguous block from start_id to end_id, then selects only required IDs.
+        Load rows corresponding to a list of IDs from disk efficiently using seek/read.
+        Handles sorted or non-contiguous IDs with jumps.
 
-        ids: list or np.array of integers (IDs within a window)
+        ids: list or np.array of integers
         returns: np.array of shape (len(ids), DIMENSION)
         """
-        ids = np.array(ids, dtype=np.uint32)
-        ids.sort()  # ensure sorted
+        row_size = DIMENSION * 4  # float32 = 4 bytes
+        row_size = DIMENSION * 4 
+        rows = np.empty((len(ids), DIMENSION), dtype=np.float32)
 
-        start_id = ids[0]
-        end_id = ids[-1]
+        # Group contiguous indices into blocks
+        blocks = []
+        start = ids[0]
+        prev = ids[0]
+        for i in ids[1:]:
+            if i != prev + 1:
+                blocks.append((start, prev))
+                start = i
+            prev = i
+        blocks.append((start, prev))
 
-        # Read contiguous block from disk (from start_id to end_id)
-        offset = start_id * DIMENSION * 4   # float32 = 4 bytes
-        shape = (end_id - start_id + 1, DIMENSION)
-
-        block = np.memmap(self.db_path, dtype=np.float32, mode='r', offset=offset, shape=shape)
-        block_array = block[:]  
-        del block  
-
-        # Compute relative indices within the block
-        relative_indices = ids - start_id
-
-        # Select only the rows we care about
-        rows = block_array[relative_indices, :]
-        del block_array
+        # Read each block using seek
+        idx = 0
+        with open(self.db_path, "rb") as f:
+            for start_block, end_block in blocks:
+                f.seek(start_block * row_size)
+                block_len = end_block - start_block + 1
+                block_data = np.frombuffer(f.read(block_len * row_size), dtype=np.float32)
+                block_data = block_data.reshape(block_len, DIMENSION)
+                rows[idx:idx+block_len, :] = block_data
+                idx += block_len
 
         return rows
         
@@ -137,8 +143,8 @@ class VecDB:
 
 
     def retrieve(self, query, top_k=5, n_probe=None, chunk_size=50):
-        self.no_centroids = 7000
-        self.index_path = f"index_10M_{self.no_centroids}_centroids"
+        self.no_centroids = 10_000
+        self.index_path = f"index_10M_{self.no_centroids}_centroids_f16"
         query = np.asarray(query, dtype=np.float32).squeeze()
 
         query_norm = np.linalg.norm(query)
@@ -156,10 +162,9 @@ class VecDB:
 
         # Auto n_probe choice
         if n_probe is None:
-            n_probe = 10 if num_centroids <= 15_000_000 else 8
+            n_probe = 14 if num_centroids <= 15_000_000 else 8
 
         heap = []
-
         # Loop over batches
         for start in range(0, num_centroids, 2000):
             end = min(start + 2000, num_centroids)
@@ -179,7 +184,6 @@ class VecDB:
             del sims
 
         del centroids
-
           # Extract top n_probe IDs sorted descending similarity
         top = heapq.nlargest(n_probe, heap)
         nearest_centroids = np.array([cid for (_, cid) in top], dtype=np.int32)
@@ -209,19 +213,35 @@ class VecDB:
         grouped_ids = self.group_ids_by_window_fast(all_ids, window=1500)
         del all_ids 
         top_heap = []
+        row_size = DIMENSION * 4  
+        with open(self.db_path, "rb") as f: 
+            for group in grouped_ids:
+                start_id = group[0]
+                end_id = group[-1]
 
-        for group in grouped_ids:
-            vecs = self.get_all_ids_rows_optimized(group)
-            scores = vecs.dot(normalized_query)
-            for score, id in zip(scores, group):
-                if len(top_heap) < top_k:
-                    heapq.heappush(top_heap, (score, id))
-                else:
-                    heapq.heappushpop(top_heap, (score, id))
+                # Read contiguous block for this group
+                f.seek(start_id * row_size)
+                block_len = end_id - start_id + 1
+                block_data = np.frombuffer(f.read(block_len * row_size), dtype=np.float32)
+                block_data = block_data.reshape(block_len, DIMENSION)
 
-            del scores, vecs
+                # Select only the rows we need
+                relative_indices = group - start_id
+                vecs = block_data[relative_indices, :]
+
+                # Compute scores
+                scores = vecs.dot(normalized_query)
+
+                # Maintain top-k heap
+                for score, id in zip(scores, group):
+                    if len(top_heap) < top_k:
+                        heapq.heappush(top_heap, (score, id))
+                    else:
+                        heapq.heappushpop(top_heap, (score, id))
+
+                # Free memory
+                del vecs, scores, block_data
         del grouped_ids
-
         results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
         del top_heap
         return results
@@ -232,14 +252,14 @@ class VecDB:
     def _build_index(self):
        
         # sqrt(N) rule
-        self.no_centroids = 7000
+        self.no_centroids = 9_000
         self.index_path = f"index_10M_{self.no_centroids}_centroids"
         # data is a reference to the memmap object, not the data in RAM
         data = self.get_all_rows()
 
         kmeans = MiniBatchKMeans(
             n_clusters=self.no_centroids,
-            init="k-means++",   # supported and default
+            init="k-means++",   
             batch_size=10_000,
             random_state=42
         )
