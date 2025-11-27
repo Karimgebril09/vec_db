@@ -62,33 +62,35 @@ class VecDB:
         num_records = self._get_num_records()
         vectors = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
         return np.array(vectors)
-    
+   
     def get_all_ids_rows_optimized(self, ids):
-        ids = np.array(ids)
-        num_records = self._get_num_records()
+        ids = np.asarray(ids, dtype=np.int64)
+        
+        # --- Compute contiguous block boundaries ---
+        base = ids[0]
+        end = ids[-1] + 1
+        shape = (end - base, DIMENSION)
 
-        sorted_idx = np.argsort(ids)
-        sorted_ids = ids[sorted_idx]
-
-        base = sorted_ids[0]
         row_size_bytes = DIMENSION * np.dtype(np.float32).itemsize
         offset = base * row_size_bytes
 
-        # memmap starting from the base
+        # --- Load contiguous block from memmap ---
         vectors = np.memmap(
             self.db_path, dtype=np.float32, mode='r',
             offset=offset,
-            shape=(num_records - base, DIMENSION)
+            shape=shape
         )
 
-        local_ids = sorted_ids - base
-        
+        # --- Prepare output buffer ---
         result = np.empty((len(ids), DIMENSION), dtype=np.float32)
-        result[sorted_idx] = vectors[local_ids]
 
+        # --- Correct indexing ---
+        local_ids = ids - base        # positions inside the contiguous memmap block
+        result[:] = vectors[local_ids]  # fill sequentially
+
+        # cleanup
         del vectors
         return result
-    
     
     
     def _cal_score(self, vec1, vec2):
@@ -158,46 +160,38 @@ class VecDB:
         header_arr = header_arr.reshape(-1, 2)   # shape: (num_centroids, 2)
 
 
-        # Prepare top-k heap
-        top_heap = []
+        all_ids = []
 
         flat_index_path = os.path.join(self.index_path, "all_indices.bin")
-        # For each centroid to probe:
         for c in nearest_centroids:
             offset  = header_arr[c, 0]   # first column
             length  = header_arr[c, 1]   # second column
             if length == 0:
                 continue
+            ids_mm = np.memmap(flat_index_path, dtype=np.uint32, mode="r",
+                            offset=offset, shape=(length,))
+            db_ids = ids_mm[:]
+            del ids_mm  
+            all_ids.extend(db_ids)
 
-            # Process each chunk by remapping the memmap for that chunk
-            for start in range(0, length, chunk_size):
-                cur_len = min(chunk_size, length - start)
-                # Remap only this chunk
-                ids_mm = np.memmap(flat_index_path, dtype=np.uint32, mode="r",
-                                offset=offset + start * np.dtype(np.uint32).itemsize,
-                                shape=(cur_len,))
+        all_ids.sort()
+        top_heap = []   
+        chunk_size = 1000
+        for i in range(0, len(all_ids), chunk_size):
+            sub_ids = all_ids[i:i+chunk_size]
+            vecs = self.get_all_ids_rows_optimized(sub_ids)
+            scores = vecs.dot(normalized_query)
+            for score, id in zip(scores, sub_ids):
+                if len(top_heap) < top_k:
+                    heapq.heappush(top_heap, (score, id))
+                else:
+                    heapq.heappushpop(top_heap, (score, id))
 
-                chunk_ids = ids_mm[:]  
-                del ids_mm  # free memmap
+            del scores, vecs
+        del all_ids
 
-                
-                vecs = self.get_all_ids_rows_optimized(chunk_ids)
-                scores = vecs.dot(normalized_query)
-                for score, id in zip(scores, chunk_ids):
-                    if len(top_heap) < top_k:
-                        heapq.heappush(top_heap, (score, id))
-                    else:
-                        heapq.heappushpop(top_heap, (score, id))
-
-                del scores, chunk_ids
-
-        # Extract and return top-k IDs sorted by score
         results = [idx for score, idx in heapq.nlargest(top_k, top_heap)]
         del top_heap
-        # print(f"Time for centroid similarity calculation: {end_time - start_time} seconds")
-    
-        # print(f"Time for memory cleanup: {end2 - start2} seconds")
-        # print(f"Time for processing chunks: {end3 - start3} seconds")
         return results
 
 
