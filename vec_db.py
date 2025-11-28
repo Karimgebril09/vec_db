@@ -162,10 +162,10 @@ class VecDB:
         if n_probe is None:
             n_probe = 12 if num_centroids <= 15_000_000 else 8
 
-        heap = []
         # Loop over batches
         item_size = DIMENSION * 4 
-        batch_size = 4000  # Adjust based on memory constraints
+        batch_size = 4000 
+        centroid_scores = np.zeros(num_centroids, dtype=np.float32)
         for start in range(0, num_centroids, batch_size):
             end = min(start + batch_size, num_centroids)
 
@@ -186,20 +186,13 @@ class VecDB:
             # Compute similarities
             sims = batch.dot(normalized_query)
 
-            # Update heap
-            for i, s in enumerate(sims):
-                cid = start + i
-                if len(heap) < n_probe:
-                    heapq.heappush(heap, (s, cid))
-                else:
-                    heapq.heappushpop(heap, (s, cid))
+            centroid_scores[start:end] = sims
 
             del sims
             del batch
           # Extract top n_probe IDs sorted descending similarity
-        top = heapq.nlargest(n_probe, heap)
-        nearest_centroids = np.array([cid for (_, cid) in top], dtype=np.int32)
-        del heap, top
+        nearest_centroids = np.argpartition(-centroid_scores, n_probe-1)[:n_probe]
+        del centroid_scores
 
 
         header_arr = np.fromfile(os.path.join(self.index_path, "index_header.bin"), dtype=np.uint32)
