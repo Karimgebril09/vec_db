@@ -165,7 +165,7 @@ class VecDB:
         heap = []
         # Loop over batches
         item_size = DIMENSION * 4 
-        batch_size = 2500  # Adjust based on memory constraints
+        batch_size = 4000  # Adjust based on memory constraints
         for start in range(0, num_centroids, batch_size):
             end = min(start + batch_size, num_centroids)
 
@@ -219,7 +219,7 @@ class VecDB:
             all_ids.extend(db_ids)
 
         all_ids.sort()
-        grouped_ids = self.group_ids_by_window_fast(all_ids, window=2500)
+        grouped_ids = self.group_ids_by_window_fast(all_ids, window=4000)
         del all_ids 
         top_heap = []
         row_size = DIMENSION * 4  
