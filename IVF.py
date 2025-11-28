@@ -1,195 +1,162 @@
 import numpy as np
-from sklearn.cluster import KMeans
 import os
+import shutil
+import heapq
+import tqdm
+from sklearn.cluster import MiniBatchKMeans
 
-class IVFIndex:
-    """
-    Optimized IVFIndex:
-      - cluster_centers saved in prefix_centers.npy
-      - concatenated ids saved in prefix_ids.npy (dtype=uint32)
-      - sizes saved in prefix_sizes.npy (dtype=uint32)
-    Retrieval uses get_row(i) to fetch vectors on demand (memory-efficient).
-    """
+ELEMENT_SIZE = np.dtype(np.float32).itemsize
+DIMENSION = 64
 
-    def __init__(self, n_clusters=100, random_state=42):
-        self.n_clusters = n_clusters
-        self.cluster_centers = None              # (n_clusters, dim) float32
-        # Compact representation of inverted lists:
-        self.ids = None                          # 1D uint32 (all ids concatenated)
-        self.sizes = None                        # 1D uint32 (size per cluster)
-        self.random_state = random_state
-        self.fitted = False
 
-    # -------------------------
-    # Fit & build compact index
-    # -------------------------
-    def fit(self, vectors):
-        """
-        vectors: (N, D) numpy array in memory (only needed to build index)
-        After fit, builds:
-          - self.cluster_centers (float32)
-          - self.ids (uint32) concatenated
-          - self.sizes (uint32) per cluster
-        """
-        print("Fitting KMeans centroids...")
-        kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.random_state)
-        labels = kmeans.fit_predict(vectors)
-        self.cluster_centers = kmeans.cluster_centers_.astype(np.float32)
+class IVFFlat:
+    def __init__(self, db_path, index_path, n_centroids, n_probe):
+        self.db_path = db_path
+        self.index_path = index_path
+        self.n_centroids = n_centroids
+        self.n_probe = n_probe
 
-        # Build lists for each cluster ID (0..n_clusters-1)
-        lists = [[] for _ in range(self.n_clusters)]
-        for idx, lab in enumerate(labels):
-            lists[lab].append(idx)
-
-        # Convert to uint32 arrays and concatenate
-        sizes = np.empty(self.n_clusters, dtype=np.uint32)
-        id_chunks = []
-        for c in range(self.n_clusters):
-            arr = np.array(lists[c], dtype=np.uint32)
-            id_chunks.append(arr)
-            sizes[c] = arr.size
-
-        if len(id_chunks):
-            ids = np.concatenate(id_chunks).astype(np.uint32)
-        else:
-            ids = np.empty(0, dtype=np.uint32)
-
-        self.ids = ids
-        self.sizes = sizes
-        self.fitted = True
-        print("Index built: n_clusters =", self.n_clusters, "total_ids =", self.ids.size)
-
-    # -------------------------
-    # Save / Load (binary .npy files)
-    # -------------------------
-    def save(self, index_dir):
-        """Save IVF index in optimized compact format:
-           - centers.npy  : (n_clusters, dim) float32
-           - sizes.npy    : (n_clusters,) uint32
-           - ids.dat      : all cluster ids concatenated as raw uint32
-        """
-        if not os.path.exists(index_dir):
-            os.makedirs(index_dir)
-
-        # Save cluster centers
-        np.save(
-            os.path.join(index_dir, "centers.npy"),
-            self.cluster_centers.astype(np.float32)
+    def build(self,data):
+       
+        kmeans = MiniBatchKMeans(
+            n_clusters=self.n_centroids,
+            init="k-means++",
+            batch_size=10_000,
+            random_state=42,
         )
+        kmeans.fit(data)
 
-        # Save sizes
-        np.save(
-            os.path.join(index_dir, "sizes.npy"),
-            self.sizes.astype(np.uint32)
-        )
+        labels = kmeans.labels_
+        centers = kmeans.cluster_centers_.astype(np.float32)
 
-        # Save concatenated ids as binary file
-        self.ids.astype(np.uint32).tofile(
-            os.path.join(index_dir, "ids.dat")
-        )
+        del data
+        del kmeans
 
-        print(f"[OK] Index saved to folder: {index_dir}")
+        if os.path.exists(self.index_path):
+            shutil.rmtree(self.index_path)
+        os.makedirs(self.index_path, exist_ok=True)
 
+        cluster_infos = []
+        for cid in range(self.n_centroids):
+            indices = np.where(labels == cid)[0].astype(np.uint32)
+            cluster_infos.append((cid, indices))
 
-    def load(self, index_dir, mmap=False):
-        """Load IVF index saved in compact format."""
+        header = []
+        flat_path = os.path.join(self.index_path, "all_indices.bin")
+        with open(flat_path, "wb") as f:
+            offset = 0
+            for cid, inds in cluster_infos:
+                length = inds.size
+                f.write(inds.tobytes())
+                header.append([offset, length])
+                offset += length * inds.dtype.itemsize
 
-        # Load cluster centers
-        self.cluster_centers = np.load(
-            os.path.join(index_dir, "centers.npy"),
-            mmap_mode='r' if mmap else None
-        )
+        header_matrix = np.array(header, dtype=np.uint32)
+        header_matrix.tofile(os.path.join(self.index_path, "index_header.bin"))
 
-        # Load sizes
-        self.sizes = np.load(
-            os.path.join(index_dir, "sizes.npy"),
-            mmap_mode='r' if mmap else None
-        )
+        norms = np.linalg.norm(centers, axis=1, keepdims=True)
+        centers = centers / (norms + 1e-12)
+        centers.astype(np.float32).tofile(os.path.join(self.index_path, "centroids.dat"))
 
-        # Load concatenated ids
-        ids_path = os.path.join(index_dir, "ids.dat")
-        if mmap:
-            self.ids = np.memmap(ids_path, dtype=np.uint32, mode='r')
-        else:
-            self.ids = np.fromfile(ids_path, dtype=np.uint32)
+   
+    def retrieve(self, query, top_k=5):
+        query = np.asarray(query, dtype=np.float32).squeeze()
+        qn = np.linalg.norm(query)
+        normalized_query = query / (qn if qn != 0 else 1)
 
-        self.n_clusters = self.sizes.size
-        self.fitted = True
+        centers_path = os.path.join(self.index_path, "centroids.dat")
+        if not os.path.exists(centers_path):
+            return []
 
-        print(f"[OK] Index loaded from folder: {index_dir}")
+        item_size = DIMENSION * 4
+        batch_size = 4000
+        centroid_scores = np.zeros(self.n_centroids, dtype=np.float32)
 
-    # -------------------------
-    # Helper to get cluster slice
-    # -------------------------
-    def _cluster_slice(self, cluster_id):
-        """
-        Return (start, size) for cluster_id, and a view into ids array for that cluster.
-        """
-        if self.sizes is None:
-            raise ValueError("Index not loaded/fitted.")
-        if cluster_id < 0 or cluster_id >= self.n_clusters:
-            return np.empty(0, dtype=np.uint32)
+        for start in range(0, self.n_centroids, batch_size):
+            end = min(start + batch_size, self.n_centroids)
+            n_items = end - start
+            offset_bytes = start * item_size
 
-        # compute offsets on the fly: offsets = cumsum(sizes) - sizes
-        # For performance we can compute offsets once externally if needed.
-        offsets = np.cumsum(self.sizes, dtype=np.uint64) - self.sizes.astype(np.uint64)
-        start = int(offsets[cluster_id])
-        size = int(self.sizes[cluster_id])
-        if size == 0:
-            return np.empty(0, dtype=np.uint32)
-        return self.ids[start: start + size]
+            batch = np.memmap(
+                centers_path, dtype=np.float32, mode='r',
+                shape=(n_items, DIMENSION), offset=offset_bytes
+            )
+            sims = batch.dot(normalized_query)
+            centroid_scores[start:end] = sims
 
-    # -------------------------
-    # Retrieval
-    # -------------------------
-    def retrieve(self, query_vector, n_clusters, n_arrays, cosine_similarity, get_row, sort_results=True):
-        """
-        query_vector: 1D array (D,)
-        n_clusters: number of nearest clusters to probe (n_probe)
-        n_arrays: number of desired neighbors (top-k)
-        cosine_similarity: function(a,b)->float
-        get_row: function(i)->vector
-        Returns: numpy array of top indices sorted by descending similarity.
-        """
-        if not self.fitted:
-            raise ValueError("Index not fitted or loaded.")
+            del sims, batch
 
-        # 1) similarity to cluster centers
-        sims_centers = np.array([cosine_similarity(query_vector, c) for c in self.cluster_centers]).squeeze()
-        # select n_clusters clusters (fast)
-        if n_clusters >= self.n_clusters:
-            nearest_clusters = np.arange(self.n_clusters)
-        else:
-            nearest_clusters = np.argpartition(sims_centers, -n_clusters)[-n_clusters:]
+        nearest_centroids = np.argpartition(-centroid_scores, self.n_probe - 1)[:self.n_probe]
+        del centroid_scores
 
-        # 2) gather candidate indices by slicing ids using sizes/offsets
-        # compute offsets once to avoid repeated cumsum calls
-        offsets = np.cumsum(self.sizes, dtype=np.uint64) - self.sizes.astype(np.uint64)
-        candidate_ids_list = []
-        for c in nearest_clusters:
-            start = int(offsets[c])
-            size = int(self.sizes[c])
-            if size > 0:
-                candidate_ids_list.append(self.ids[start:start + size])
-        if len(candidate_ids_list) == 0:
-            return np.array([], dtype=np.uint32)
+        header_arr = np.fromfile(
+            os.path.join(self.index_path, "index_header.bin"),
+            dtype=np.uint32
+        ).reshape(-1, 2)
 
-        all_candidate_ids = np.concatenate(candidate_ids_list)
+        all_ids = []
+        flat_index_path = os.path.join(self.index_path, "all_indices.bin")
+        for c in nearest_centroids:
+            offset, length = header_arr[c]
+            if length == 0:
+                continue
+            mm = np.memmap(
+                flat_index_path, dtype=np.uint32, mode="r",
+                offset=offset, shape=(length,)
+            )
+            all_ids.extend(mm[:])
+            del mm
 
-        # 3) compute similarity to candidate vectors using get_row (on-demand)
-        # If many candidates, consider batching the get_row calls at higher layer
-        sims = np.empty(all_candidate_ids.shape[0], dtype=np.float32)
-        for i_idx, vid in enumerate(all_candidate_ids):
-            vec = get_row(int(vid))
-            sims[i_idx] = cosine_similarity(query_vector, vec)
+        all_ids.sort()
+        groups = self.group_ids_by_window_fast(all_ids, 4000)
+        del all_ids
 
-        # 4) select top n_arrays
-        if n_arrays >= sims.size:
-            sel_idx = np.argsort(sims)[::-1]  # descending
-        else:
-            part = np.argpartition(sims, -n_arrays)[-n_arrays:]
-            # order the selected partition
-            sel_idx = part[np.argsort(sims[part])[::-1]]
+        row_size = DIMENSION * 4
+        top_heap = []
 
-        top_ids = all_candidate_ids[sel_idx].astype(np.uint32)
-        return top_ids
+        with open(self.db_path, "rb") as f:
+            for g in groups:
+                start_id = g[0]
+                end_id = g[-1]
+                f.seek(start_id * row_size)
+
+                block_len = end_id - start_id + 1
+                block = np.frombuffer(f.read(block_len * row_size), dtype=np.float32)
+                block = block.reshape(block_len, DIMENSION)
+
+                idxs = g - start_id
+                vecs = block[idxs, :]
+
+                scores = vecs.dot(normalized_query)
+
+                for score, idx in zip(scores, g):
+                    if len(top_heap) < top_k:
+                        heapq.heappush(top_heap, (score, idx))
+                        
+                    else:
+                        heapq.heappushpop(top_heap, (score, idx))
+
+                del vecs, block, scores
+
+        return [idx for score, idx in heapq.nlargest(top_k, top_heap)]
+
+    def group_ids_by_window_fast(self, all_ids, window):
+        all_ids = np.asarray(all_ids)
+        if len(all_ids) == 0:
+            return []
+
+        limits = all_ids + window
+        ends = np.searchsorted(all_ids, limits + 1, side="left")
+
+        starts = [0]
+        for i in range(1, len(all_ids)):
+            if ends[i - 1] == i:
+                starts.append(i)
+
+        starts = np.array(starts)
+        return [all_ids[s:ends[s]] for s in starts]
+
+    def get_all_rows(self):
+        size = os.path.getsize(self.db_path) // (DIMENSION * 4)
+        mmap_data = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(size, DIMENSION))
+        return np.array(mmap_data)
