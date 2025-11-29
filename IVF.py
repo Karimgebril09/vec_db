@@ -3,7 +3,7 @@ import os
 import shutil
 import heapq
 import tqdm
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.cluster import MiniBatchKMeans, KMeans
 
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
@@ -15,6 +15,7 @@ class IVFFlat:
         self.index_path = index_path
         self.n_centroids = n_centroids
         self.n_probe = n_probe
+        self.db_size = os.path.getsize(self.db_path) // (DIMENSION * ELEMENT_SIZE)
 
     def build(self,data):
        
@@ -22,8 +23,9 @@ class IVFFlat:
             n_clusters=self.n_centroids,
             init="k-means++",
             batch_size=10_000,
-            random_state=42,
-        )
+            n_init=10,
+            random_state=50,
+        ) 
         kmeans.fit(data)
 
         labels = kmeans.labels_
@@ -57,6 +59,7 @@ class IVFFlat:
         norms = np.linalg.norm(centers, axis=1, keepdims=True)
         centers = centers / (norms + 1e-12)
         centers.astype(np.float32).tofile(os.path.join(self.index_path, "centroids.dat"))
+        print("IVF-Flat index built successfully.")
 
    
     def retrieve(self, query, top_k=5):
@@ -86,7 +89,10 @@ class IVFFlat:
 
             del sims, batch
 
-        nearest_centroids = np.argpartition(-centroid_scores, self.n_probe - 1)[:self.n_probe]
+        if len(centroid_scores)<1000:
+            nearest_centroids = np.argsort(-centroid_scores)[:self.n_probe]
+        else:
+            nearest_centroids = np.argpartition(-centroid_scores, self.n_probe - 1)[:self.n_probe]
         del centroid_scores
 
         header_arr = np.fromfile(
@@ -141,20 +147,21 @@ class IVFFlat:
         return [idx for score, idx in heapq.nlargest(top_k, top_heap)]
 
     def group_ids_by_window_fast(self, all_ids, window):
+        """
+        Group sorted unique IDs into consecutive blocks of max size `window`.
+        """
         all_ids = np.asarray(all_ids)
         if len(all_ids) == 0:
             return []
 
-        limits = all_ids + window
-        ends = np.searchsorted(all_ids, limits + 1, side="left")
-
-        starts = [0]
+        groups = []
+        start = 0
         for i in range(1, len(all_ids)):
-            if ends[i - 1] == i:
-                starts.append(i)
-
-        starts = np.array(starts)
-        return [all_ids[s:ends[s]] for s in starts]
+            if all_ids[i] - all_ids[start] >= window:
+                groups.append(all_ids[start:i])
+                start = i
+        groups.append(all_ids[start:])
+        return groups
 
     def get_all_rows(self):
         size = os.path.getsize(self.db_path) // (DIMENSION * 4)

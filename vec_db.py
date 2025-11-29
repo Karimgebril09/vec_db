@@ -19,8 +19,7 @@ class VecDB:
             self.generate_database(db_size)
     
     def generate_database(self, size: int) -> None:
-        rng = np.random.default_rng(DB_SEED_NUMBER)
-        vectors = rng.random((size, DIMENSION), dtype=np.float32)
+        vectors = np.memmap("new_embeddings.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
         self._write_vectors_to_file(vectors)
         self._build_index()
 
@@ -67,11 +66,9 @@ class VecDB:
         # Create/load the IVFFlat index if it doesn't exist
         
         if num_records == 1_000_000:
-            self.index = IVFFlat(n_centroids=2000, n_probe=10, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=800, n_probe=13, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 10_000_000:
-            self.index = IVFFlat(n_centroids=8000, n_probe=5, db_path=self.db_path, index_path=self.index_path )
-        elif num_records == 15_000_000:
-            self.index = IVFFlat(n_centroids=12000, n_probe=4, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=8000, n_probe=15, db_path=self.db_path, index_path=self.index_path )
         elif num_records == 20_000_000:
             self.index = IVFFlat(n_centroids=16000, n_probe=5, db_path=self.db_path, index_path=self.index_path)
         else:
@@ -98,11 +95,9 @@ class VecDB:
 
         # Select IVF-Flat configuration based on DB size
         if num_records == 1_000_000:
-            self.index = IVFFlat(n_centroids=2000, n_probe=10, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=800, n_probe=10, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 10_000_000:
-            self.index = IVFFlat(n_centroids=8000, n_probe=5, db_path=self.db_path, index_path=self.index_path)
-        elif num_records == 15_000_000:
-            self.index = IVFFlat(n_centroids=12000, n_probe=4, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=8000, n_probe=15, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 20_000_000:
             self.index = IVFFlat(n_centroids=16000, n_probe=5, db_path=self.db_path, index_path=self.index_path)
         else:
