@@ -1,0 +1,19 @@
+Requirement already satisfied: memory-profiler in d:\apps\anaconda\lib\site-packages (0.61.0)
+Requirement already satisfied: psutil in c:\users\m\appdata\roaming\python\python312\site-packages (from memory-profiler) (6.1.1)
+Collecting memory-profiler
+  Using cached memory_profiler-0.61.0-py3-none-any.whl.metadata (20 kB)
+Requirement already satisfied: psutil in d:\apps\anaconda\envs\env\lib\site-packages (from memory-profiler) (6.1.0)
+Using cached memory_profiler-0.61.0-py3-none-any.whl (31 kB)
+Installing collected packages: memory-profiler
+Successfully installed memory-profiler-0.61.0
+Defaulting to user installation because normal site-packages is not writeable
+Collecting memory-profiler
+  Using cached memory_profiler-0.61.0-py3-none-any.whl.metadata (20 kB)
+Requirement already satisfied: psutil in c:\users\m\appdata\roaming\python\python312\site-packages (from memory-profiler) (6.1.1)
+Using cached memory_profiler-0.61.0-py3-none-any.whl (31 kB)
+Installing collected packages: memory-profiler
+Successfully installed memory-profiler-0.61.0
+Requirement already satisfied: memory-profiler in c:\users\m\appdata\roaming\python\python312\site-packages (0.61.0)
+Requirement already satisfied: psutil in c:\users\m\appdata\roaming\python\python312\site-packages (from memory-profiler) (6.1.1)
+Requirement already satisfied: memory-profiler in c:\users\m\appdata\roaming\python\python312\site-packages (0.61.0)
+Requirement already satisfied: psutil in c:\users\m\appdata\roaming\python\python312\site-packages (from memory-profiler) (6.1.1)
