@@ -22,8 +22,8 @@ class IVFFlat:
         kmeans = MiniBatchKMeans(
             n_clusters=self.n_centroids,
             init="k-means++",
-            batch_size=10_000,
-            n_init=10,
+            batch_size=10_000,   
+            n_init=5,         
             random_state=50,
         ) 
         kmeans.fit(data)
