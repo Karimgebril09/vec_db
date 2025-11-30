@@ -1,3 +1,6 @@
 *.dat
 *_centroids*
 /trials
+*index*
+Evaluate_ADB_Project.ipynb
+__pycache__/
