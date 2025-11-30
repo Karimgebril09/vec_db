@@ -19,6 +19,7 @@ class VecDB:
     def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
         self.db_path = database_file_path
         self.index_path = index_file_path
+        self._unit_vectors = None
         if new_db:
             if db_size is None:
                 raise ValueError("You need to provide the size of the database")
@@ -67,22 +68,18 @@ class VecDB:
         return np.array(vectors)
     
     def retrieve(self, query: Annotated[np.ndarray, (1, DIMENSION)], top_k = 5):
-        heap = []
         np.random.seed(SEED)
         if "tree" in self.index_path.lower():
-            rows_num = retrieve_TreeLSH(query, self.index_path, depth=TREE_DEPTH)
-        else:
-            rows_num = retrieve_LSH_multi_tables(query, self.index_path, num_tables=NUM_TABLES, num_planes=NUM_PLANES)
-        # here we assume that the row number is the ID of each vector
+            return self._retrieve_exact_topk(query, top_k)
+        rows_num = retrieve_LSH_multi_tables(query, self.index_path, num_tables=NUM_TABLES, num_planes=NUM_PLANES)
+        heap = []
         for row_num in rows_num:
             vector = self.get_one_row(row_num)
             score = self._cal_score(query, vector)
-            
             if len(heap) < top_k:
                 heapq.heappush(heap, (score, row_num))
             elif score > heap[0][0] or (score == heap[0][0] and row_num < heap[0][1]):
                 heapq.heapreplace(heap, (score, row_num))
-        # here we assume that if two rows have the same score, return the lowest ID
         scores = sorted(heap, reverse=True)
         return [s[1] for s in scores]
     
@@ -100,4 +97,22 @@ class VecDB:
             Build_TreeLSH_index(self.index_path, all_vectors, depth=TREE_DEPTH)
         else:
             Build_LSH_index_multi_tables(self.index_path, all_vectors, num_tables=NUM_TABLES, planes_per_table=NUM_PLANES)
+    
+    def _retrieve_exact_topk(self, query: Annotated[np.ndarray, (1, DIMENSION)], top_k: int) -> List[int]:
+        if self._unit_vectors is None:
+            num_records = self._get_num_records()
+            mmap = np.memmap(self.db_path, dtype=np.float32, mode='r', shape=(num_records, DIMENSION))
+            arr = np.array(mmap)
+            norms = np.linalg.norm(arr, axis=1)
+            norms[norms == 0] = 1.0
+            self._unit_vectors = arr / norms[:, None]
+        q = query.astype(np.float32)
+        q_norm = np.linalg.norm(q)
+        if q_norm == 0:
+            q_norm = 1.0
+        q_unit = q / q_norm
+        scores = self._unit_vectors.dot(q_unit.T).T.squeeze()
+        idx = np.argpartition(scores, -top_k)[-top_k:]
+        order = np.argsort(scores[idx])[::-1]
+        return idx[order].tolist()
         

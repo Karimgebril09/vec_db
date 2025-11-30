@@ -54,7 +54,7 @@ def eval(results: List[Result]):
 
 
 if __name__ == "__main__":
-    db = VecDB(index_file_path="TreeLSH_index",db_size = 10**6,new_db=True)
+    db = VecDB(index_file_path="TreeLSH_index20M",db_size = 20*10**6,new_db=False)
 
     all_db = db.get_all_rows()
 
