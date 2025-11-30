@@ -7,8 +7,8 @@ from sklearn.cluster import MiniBatchKMeans, KMeans
 
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
-WINDOW=5000
-BATCH_SIZE=5000
+WINDOW=6000
+BATCH_SIZE=4000
 
 class IVFFlat:
     def __init__(self, db_path, index_path, n_centroids, n_probe):
