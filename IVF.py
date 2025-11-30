@@ -7,7 +7,8 @@ from sklearn.cluster import MiniBatchKMeans, KMeans
 
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
 DIMENSION = 64
-
+WINDOW=5000
+BATCH_SIZE=5000
 
 class IVFFlat:
     def __init__(self, db_path, index_path, n_centroids, n_probe):
@@ -114,7 +115,7 @@ class IVFFlat:
             del mm
 
         all_ids.sort()
-        groups = self.group_ids_by_window_fast(all_ids, 4000)
+        groups = self.group_ids_by_window_fast(all_ids, WINDOW)
         del all_ids
 
         row_size = DIMENSION * 4
@@ -124,7 +125,8 @@ class IVFFlat:
             for g in groups:
                 start_id = g[0]
                 end_id = g[-1]
-                f.seek(start_id * row_size)
+                offset=np.int64(start_id) * np.int64(row_size)
+                f.seek(offset)
 
                 block_len = end_id - start_id + 1
                 block = np.frombuffer(f.read(block_len * row_size), dtype=np.float32)
@@ -143,7 +145,6 @@ class IVFFlat:
                         heapq.heappushpop(top_heap, (score, idx))
 
                 del vecs, block, scores
-
         return [idx for score, idx in heapq.nlargest(top_k, top_heap)]
 
     def group_ids_by_window_fast(self, all_ids, window):
