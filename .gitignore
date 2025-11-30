@@ -1,6 +1,1 @@
 *.dat
-/LSH_index/
-*pycache*
-*.zip
-/trials
-*centroids*

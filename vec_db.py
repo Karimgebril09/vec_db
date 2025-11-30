@@ -4,6 +4,7 @@ import os
 # my imports
 import heapq
 from LSH import SEED, Build_LSH_index, retreive_LSH, Build_LSH_index_multi_tables, retrieve_LSH_multi_tables
+from TreeLSH import Build_TreeLSH_index, retrieve_TreeLSH
 
 DB_SEED_NUMBER = 42
 ELEMENT_SIZE = np.dtype(np.float32).itemsize
@@ -12,6 +13,7 @@ DIMENSION = 64
 # my consts
 NUM_PLANES = 8
 NUM_TABLES = 4
+TREE_DEPTH = 12
 
 class VecDB:
     def __init__(self, database_file_path = "saved_db.dat", index_file_path = "index.dat", new_db = True, db_size = None) -> None:
@@ -27,7 +29,7 @@ class VecDB:
     
     def generate_database(self, size: int) -> None:
         # rng = np.random.default_rng(DB_SEED_NUMBER)
-        vectors = np.memmap("OpenSubtitles_en_20M_emb_64.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
+        vectors = np.memmap("new_embeddings.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
         self._write_vectors_to_file(vectors)
         self._build_index()
 
@@ -67,9 +69,10 @@ class VecDB:
     def retrieve(self, query: Annotated[np.ndarray, (1, DIMENSION)], top_k = 5):
         heap = []
         np.random.seed(SEED)
-        # plane_norms = np.memmap(os.path.join(self.index_path, "plane_norms.dat"), dtype=np.float32, mode='r', shape=(NUM_PLANES, DIMENSION))
-        rows_num=retrieve_LSH_multi_tables(query, self.index_path, num_tables=NUM_TABLES, num_planes=NUM_PLANES)
-        # rows_num=retreive_LSH(plane_norms, query, self.index_path)
+        if "tree" in self.index_path.lower():
+            rows_num = retrieve_TreeLSH(query, self.index_path, depth=TREE_DEPTH)
+        else:
+            rows_num = retrieve_LSH_multi_tables(query, self.index_path, num_tables=NUM_TABLES, num_planes=NUM_PLANES)
         # here we assume that the row number is the ID of each vector
         for row_num in rows_num:
             vector = self.get_one_row(row_num)
@@ -92,6 +95,9 @@ class VecDB:
 
     def _build_index(self):
         # Placeholder for index building logic
-        all_vectors=self.get_all_rows()
-        Build_LSH_index_multi_tables(self.index_path, all_vectors, num_tables=NUM_TABLES, planes_per_table=NUM_PLANES)
-        # Build_LSH_index(self.index_path, all_vectors, NUM_PLANES)
+        all_vectors = self.get_all_rows()
+        if "tree" in self.index_path.lower():
+            Build_TreeLSH_index(self.index_path, all_vectors, depth=TREE_DEPTH)
+        else:
+            Build_LSH_index_multi_tables(self.index_path, all_vectors, num_tables=NUM_TABLES, planes_per_table=NUM_PLANES)
+        
