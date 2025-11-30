@@ -6,11 +6,9 @@ import logging
 from sklearn.metrics.pairwise import euclidean_distances
 import os
 import gzip
-import varint
 logging.basicConfig(level=logging.INFO)
-import gc
 class IVF_PQ_Index:
-    def __init__(self, n_subvectors,n_bits, db_size,n_clusters,random_state=42,dimension=64,folder_path='index'):
+    def _init_(self, n_subvectors,n_bits, db_size,n_clusters,random_state=42,dimension=64,folder_path='index'):
         self.db_size = db_size
         # PQ parameters
         self.n_bits = n_bits    
@@ -87,7 +85,6 @@ class IVF_PQ_Index:
         nearest_vector_indices = np.argsort(distances, axis=1)[:, :n_neighbors]
         return nearest_vector_indices
     def retreive(self,query_vector,cosine_similarity,get_row,n_clusters=3,n_neighbors=10):
-        gc.collect()
         #! calculate the similarities between the query vector and the cluster centers
         mmap=np.memmap(os.path.join(self.folder_path,'cluster_centers.dat'), dtype=np.float32, mode='r', shape=(self.n_clusters, self.dimension))
         self.cluster_centers=mmap[:].reshape(self.n_clusters,self.dimension)
@@ -99,23 +96,14 @@ class IVF_PQ_Index:
         #! get nearest n vectors
         similarities = np.empty((0,))
         vectors = np.empty((0, ))
-        self.start_offsets=np.memmap(os.path.join(self.folder_path,'start_offsets.dat'), dtype=np.uint32, mode='r', shape=(self.n_clusters,))
-        self.start_offsets=self.start_offsets[:]
         for cluster in nearest_clusters:
-            start=self.start_offsets[cluster]
-            end=self.start_offsets[cluster+1] if cluster+1<self.n_clusters else self.db_size
-            indices_memmap=np.memmap(os.path.join(self.folder_path,'all_indices.dat'), dtype=np.uint32, mode='r', offset=start*4, shape=(end-start,))
-            indices=indices_memmap[:]
-
-            with gzip.open(os.path.join(self.folder_path,'codewords.dat'), 'rb') as f:
-                all_codewords=pickle.load(f)
-            # code_path = os.path.join(self.folder_path, "codewords.dat")
-            # codebook_memmap = np.memmap(code_path, dtype=np.uint8, mode='r', offset=start * (self.m), shape=(end - start, self.m ))      
-            
-            codewords=all_codewords[start:end]
-
-            del all_codewords
-            
+            #! get the codewords and indices of the vectors in the cluster
+            indices=None
+            codewords=None
+            with gzip.open(os.path.join(self.folder_path,f'indices_{cluster}.dat'), 'rb') as f:
+                indices = pickle.load(f)
+            with gzip.open(os.path.join(self.folder_path,f'codewords_{cluster}.dat'), 'rb') as f:
+                codewords=pickle.load(f)
             n_neighbors_per_sub_cluster = (
                 n_neighbors*3 if self.db_size==1000000
                 else n_neighbors*25 if self.db_size==10000000 
@@ -163,20 +151,16 @@ class IVF_PQ_Index:
         ]
         logging.info(f"Created subvector estimators {subvector_estimators[0]!r}")
         #! train the subclusters and assign the codewords and create the inverted index
-        clusters_offset=0
-        self.start_offsets=np.zeros((self.n_clusters,),dtype=np.uint32)
         for i in range(self.n_clusters):
             print(f"Training cluster {i}")
             indices = label_indices[i]
             sub_vecstors = vectors[indices]
-            self.start_offsets[i]=clusters_offset
             for j in range(self.m):
                 #! to slice arrays
                 sub_vec_size=self.sub_vec_dim  
                 estimator = subvector_estimators[i][j]
                 subvectors = sub_vecstors[:, j * sub_vec_size : (j + 1) * sub_vec_size]
                 estimator.fit(subvectors)
-            clusters_offset += len(indices)
                 
             self.subvector_estimators_centers[i]=np.array([estimator.cluster_centers_ for estimator in subvector_estimators[i]])
             codewords = self._add(vectors[indices],self.subvector_estimators_centers[i])
@@ -194,24 +178,8 @@ class IVF_PQ_Index:
         mmap=np.memmap(os.path.join(folder_path,'sub_cluster_centers.dat'), dtype=np.float32, mode='w+', shape=(self.n_clusters,self.m,self.k,self.sub_vec_dim ))
         mmap[:]=self.subvector_estimators_centers
         mmap.flush()      
-        mmap=np.memmap(os.path.join(folder_path,'start_offsets.dat'), dtype=np.uint32, mode='w+', shape=(self.n_clusters,))
-        mmap[:]=self.start_offsets
-        mmap.flush()
-        all_codes_words=[]
-        all_indices=[]
         for label,codewords in self.inverted_index.items():
-            all_codes_words.extend(codewords[0])
-            all_indices.extend(codewords[1])
-        mmap=np.memmap(os.path.join(folder_path,'all_indices.dat'), dtype=np.uint32, mode='w+', shape=(len(all_indices),))
-        mmap[:]=all_indices
-        mmap.flush()
-        all_codes_words = np.array(all_codes_words, dtype=np.uint8)
-
-        with gzip.open(os.path.join(folder_path,'codewords.dat'), 'wb') as f:
-            pickle.dump(all_codes_words, f)
-        
-        # mmap=np.memmap(os.path.join(folder_path,'codewords.dat'), dtype=np.uint8, mode='w+', shape=(self.db_size, self.m))
-        # mmap[:]=all_codes_words
-        # mmap.flush()
-
-        
+            with gzip.open(os.path.join(folder_path,f'codewords_{label}.dat'), 'wb') as f:
+                pickle.dump(codewords[0], f)
+            with gzip.open(os.path.join(folder_path,f'indices_{label}.dat'), 'wb') as f:
+                pickle.dump(codewords[1], f)

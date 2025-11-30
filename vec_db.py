@@ -27,7 +27,8 @@ class VecDB:
         else:
             self.index.load_index()
     def generate_database(self, size: int) -> None:
-        vectors = np.memmap("new_embeddings.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
+        vectors = np.memmap("OpenSubtitles_en_20M_emb_64.dat", dtype=np.float32, mode='r', shape=(size, DIMENSION))
+        
         self._write_vectors_to_file(vectors)
         self._build_index()
 
