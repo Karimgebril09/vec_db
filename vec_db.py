@@ -68,7 +68,7 @@ class VecDB:
         if num_records == 1_000_000:
             self.index = IVFFlat(n_centroids=800, n_probe=10, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 10_000_000:
-            self.index = IVFFlat(n_centroids=8000, n_probe=10, db_path=self.db_path, index_path=self.index_path )
+            self.index = IVFFlat(n_centroids=8000, n_probe=7, db_path=self.db_path, index_path=self.index_path )
         elif num_records == 20_000_000:
             self.index = IVFFlat(n_centroids=16000, n_probe=5, db_path=self.db_path, index_path=self.index_path)
         else:
@@ -97,7 +97,7 @@ class VecDB:
         if num_records == 1_000_000:
             self.index = IVFFlat(n_centroids=800, n_probe=10, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 10_000_000:
-            self.index = IVFFlat(n_centroids=8000, n_probe=10, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=8000, n_probe=8, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 20_000_000:
             self.index = IVFFlat(n_centroids=16000, n_probe=5, db_path=self.db_path, index_path=self.index_path)
         else:
