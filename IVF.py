@@ -146,29 +146,40 @@ class IVFFlat:
             shape=(total_len, DIMENSION)
         )
 
-        level1_scores = []
-        level1_ids = []
+        all_scores = []
+        all_ids = []
 
         for start, length in ranges:
             local_start = start - first_start
             local_end = local_start + length
 
-            block = mm[local_start:local_end]   # zero-copy slice
-            sims = block.dot(normalized_query)
+            for b_start in range(local_start, local_end, BATCH_SIZE):
+                b_end = min(b_start + BATCH_SIZE, local_end)
 
-            ids = start + np.arange(length, dtype=np.int64)
+                # read only this batch
+                batch = mm[b_start:b_end]
 
-            level1_scores.append(sims)
-            level1_ids.append(ids)
+                sims = batch.dot(normalized_query)
+
+                ids = (
+                    start +
+                    np.arange(b_start - local_start, b_end - local_start, dtype=np.int64)
+                )
+
+                all_scores.append(sims)
+                all_ids.append(ids)
 
         del mm
-        all_scores = np.concatenate(level1_scores)
-        all_ids = np.concatenate(level1_ids)
-        k = min(self.n_probe, all_scores.size)
 
-        top_idx = np.argpartition(-all_scores, k - 1)[:k]
-        order = np.argsort(-all_scores[top_idx])
-        nearest_centroids = all_ids[top_idx][order]
+        # ----------------------------
+        # Top-k selection
+        # ----------------------------
+        all_scores = np.concatenate(all_scores)
+        all_ids = np.concatenate(all_ids)
+
+        k = min(self.n_probe, all_scores.size)
+        nearest_centroids = np.argpartition(-all_scores, k - 1)[:k]
+        nearest_centroids = all_ids[nearest_centroids]
 
         header_arr = np.fromfile(
             os.path.join(self.index_path, "index_header.bin"),
