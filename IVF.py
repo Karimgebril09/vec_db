@@ -64,7 +64,6 @@ class IVFFlat:
 
    
     def retrieve(self, query, top_k=5):
-        return []
         query = np.asarray(query, dtype=np.float32).squeeze()
         qn = np.linalg.norm(query)
         normalized_query = query / (qn if qn != 0 else 1)
