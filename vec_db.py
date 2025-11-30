@@ -66,9 +66,9 @@ class VecDB:
         # Create/load the IVFFlat index if it doesn't exist
         
         if num_records == 1_000_000:
-            self.index = IVFFlat(n_centroids=800, n_centroids_level2=20, n_probe=10, n_probes_top=4, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=800, n_centroids_level2=20, n_probe=10, n_probes_top=3, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 10_000_000:
-            self.index = IVFFlat(n_centroids=8000, n_centroids_level2=40, n_probe=5, n_probes_top=4, db_path=self.db_path, index_path=self.index_path )
+            self.index = IVFFlat(n_centroids=8000, n_centroids_level2=40, n_probe=3, n_probes_top=3, db_path=self.db_path, index_path=self.index_path )
         elif num_records == 20_000_000:
             self.index = IVFFlat(n_centroids=16000, n_centroids_level2=80, n_probe=4, n_probes_top=4, db_path=self.db_path, index_path=self.index_path)
         else:
@@ -97,7 +97,7 @@ class VecDB:
         if num_records == 1_000_000:
             self.index = IVFFlat(n_centroids=800, n_centroids_level2=20, n_probe=10,n_probes_top=5, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 10_000_000:
-            self.index = IVFFlat(n_centroids=8000, n_centroids_level2=40, n_probe=4,n_probes_top=5, db_path=self.db_path, index_path=self.index_path)
+            self.index = IVFFlat(n_centroids=8000, n_centroids_level2=40, n_probe=3,n_probes_top=5, db_path=self.db_path, index_path=self.index_path)
         elif num_records == 20_000_000:
             self.index = IVFFlat(n_centroids=16000, n_centroids_level2=80, n_probe=4,n_probes_top=5, db_path=self.db_path, index_path=self.index_path)
         else:
