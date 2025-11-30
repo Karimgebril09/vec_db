@@ -131,31 +131,49 @@ class IVFFlat:
         if not ranges:
             return []
 
+        first_start = min(s for s, l in ranges)
+        last_end = max(s + l for s, l in ranges)
+        total_len = last_end - first_start
+
+        centroids_path = os.path.join(self.index_path, "centroids.dat")
+        byte_offset = first_start * DIMENSION * 4
+
+        mm = np.memmap(
+            centroids_path,
+            dtype=np.float32,
+            mode="r",
+            offset=byte_offset,
+            shape=(total_len, DIMENSION)
+        )
 
         all_scores = []
         all_ids = []
 
-        centroids_path = os.path.join(self.index_path, "centroids.dat")
-
         for start, length in ranges:
-            byte_offset = start * DIMENSION * 4 
-            mm = np.memmap(
-                centroids_path,
-                dtype=np.float32,
-                mode="r",
-                offset=byte_offset,
-                shape=(length, DIMENSION)
-            )
+            local_start = start - first_start
+            local_end = local_start + length
 
-            sims = mm.dot(normalized_query)
+            for b_start in range(local_start, local_end, BATCH_SIZE):
+                b_end = min(b_start + BATCH_SIZE, local_end)
 
-            ids = start + np.arange(length, dtype=np.int64)
+                # read only this batch
+                batch = mm[b_start:b_end]
 
-            all_scores.append(sims)
-            all_ids.append(ids)
+                sims = batch.dot(normalized_query)
 
-            del mm  
+                ids = (
+                    start +
+                    np.arange(b_start - local_start, b_end - local_start, dtype=np.int64)
+                )
 
+                all_scores.append(sims)
+                all_ids.append(ids)
+
+        del mm
+
+        # ----------------------------
+        # Top-k selection
+        # ----------------------------
         all_scores = np.concatenate(all_scores)
         all_ids = np.concatenate(all_ids)
 
