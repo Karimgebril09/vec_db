@@ -54,7 +54,7 @@ def eval(results: List[Result]):
 
 
 if __name__ == "__main__":
-    db = VecDB(db_size = 10**2)
+    db = VecDB(db_size =20*10**6,index_file_path="index_20M",database_file_path="saved_db_20M.dat",new_db=False)
 
     all_db = db.get_all_rows()
 
