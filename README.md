@@ -47,11 +47,13 @@ Once centroids are trained, all vectors are partitioned into cluster-based inver
 
 ###  Structure
 
-| Component | Format | Purpose | Size |
-|-----------|--------|---------|------|
-| **Centroids** (`centroids.dat`) | L2-normalized float32 | Centroid ID | ~3 MB |
-| **Inverted Lists** (`all_indices.bin`) | uint32 array | Vector ID groups | ~40 MB |
-| **Index Header** (`index_header.bin`) | [offset, length] pairs | Quick lookup | ~1 KB |
+| Component | Format | Purpose |
+|-----------|--------|---------|
+| **Centroids** (`centroids.dat`) | L2-normalized float32 | Centroid ID |
+| **Inverted Lists** (`all_indices.bin`) | uint32 array | Vector ID groups | 
+| **Index Header** (`index_header.bin`) | [offset, length] pairs | Quick lookup | 
+
+
 
 ###  Size Reduction Strategy
 
