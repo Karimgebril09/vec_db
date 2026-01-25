@@ -157,15 +157,5 @@ The retrieval pipeline uses the pre-normalized centroids to eliminate redundant 
 | 20M     | 0.0   | 0.26s     | 0.95 MB   |
 
 
----
 
-## 📁 Files
-
-| File | Purpose |
-|------|---------|
-| [vec_db.py](vec_db.py) | 🔧 `VecDB` wrapper & orchestration |
-| [IVF.py](IVF.py) | 🏗️ IVF-Flat build & retrieval |
-| [evaluation.py](evaluation.py) | 📊 Performance benchmarks |
-| [compression.py](compression.py) | 📦 Index packaging utilities |
-| [requirements.txt](requirements.txt) | 📋 Dependencies |
 
